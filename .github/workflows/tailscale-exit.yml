@@ -13,23 +13,24 @@ jobs:
           curl -fsSL https://tailscale.com/install.sh | sh
 
       - name: Connect Tailscale
-        env:
-          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           sudo tailscale up \
-            --authkey=$TS_AUTH_KEY \
-            --hostname=github-exit-node \
-            --advertise-exit-node
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
+            --advertise-exit-node \
+            --accept-dns=false
 
-      - name: Enable IP forwarding
+      - name: Enable IP forwarding and NAT
         run: |
           sudo sysctl -w net.ipv4.ip_forward=1
           sudo sysctl -w net.ipv6.conf.all.forwarding=1
-sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
-    sudo iptables -A FORWARD -i tailscale0 -j ACCEPT
-    sudo iptables -A FORWARD -o tailscale0 -j ACCEPT
-    
+
+          IFACE=$(ip route | grep default | awk '{print $5}')
+
+          sudo iptables -t nat -A POSTROUTING -o $IFACE -j MASQUERADE
+          sudo iptables -A FORWARD -i tailscale0 -j ACCEPT
+          sudo iptables -A FORWARD -o tailscale0 -j ACCEPT
+
       - name: Keep alive
         run: |
-          echo "Exit Node running"
-          sleep 18000
+          echo "Tailscale Exit Node is running"
+          sleep 21600
