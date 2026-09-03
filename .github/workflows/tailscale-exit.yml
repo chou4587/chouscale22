@@ -1,0 +1,32 @@
+name: Tailscale Exit Node
+
+on:
+  workflow_dispatch:
+
+jobs:
+  exit-node:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Connect Tailscale
+        env:
+          TS_AUTH_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+        run: |
+          sudo tailscale up \
+            --authkey=$TS_AUTH_KEY \
+            --hostname=github-exit-node \
+            --advertise-exit-node
+
+      - name: Enable IP forwarding
+        run: |
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1
+
+      - name: Keep alive
+        run: |
+          echo "Exit Node running"
+          sleep 18000
