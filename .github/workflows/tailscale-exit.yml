@@ -1,16 +1,29 @@
 name: Tailscale Exit Node
 
 on:
+  schedule:
+    - cron: "0 23 * * *"   # 北京时间 07:00
+    - cron: "15 3 * * *"   # 北京时间 11:15
+    - cron: "10 9 * * *"   # 北京时间 17:10
+
   workflow_dispatch:
+
+concurrency:
+  group: tailscale-exit
+  cancel-in-progress: true
+
 
 jobs:
   exit-node:
+
     runs-on: ubuntu-latest
 
     steps:
+
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
+
 
       - name: Connect Tailscale Exit Node
         run: |
@@ -19,6 +32,7 @@ jobs:
             --advertise-exit-node \
             --accept-dns=false \
             --hostname=github-exit-node
+
 
       - name: Enable IP forwarding and NAT
         run: |
@@ -33,17 +47,45 @@ jobs:
           sudo iptables -A FORWARD -i tailscale0 -j ACCEPT
           sudo iptables -A FORWARD -o tailscale0 -j ACCEPT
 
-      - name: Check Tailscale status
+
+      - name: Check Tailscale
         run: |
           sudo tailscale ip
-          sudo tailscale status --self
+          sudo tailscale status
+
 
       - name: Keep alive
         run: |
           echo "Tailscale Exit Node running"
-          while true
+
+          END=$((SECONDS+20400))
+
+          while [ $SECONDS -lt $END ]
           do
             date
             sudo tailscale ip
             sleep 300
           done
+
+
+      - name: Cleanup Tailscale
+        if: always()
+        run: |
+          sudo tailscale logout || true
+
+
+      - name: Delete old workflow runs
+        if: always()
+        run: |
+
+          gh run list \
+          --workflow=tailscale-exit.yml \
+          --limit 30 \
+          --json databaseId \
+          --jq '.[5:].databaseId' |
+          while read id
+          do
+            gh run delete $id --confirm || true
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
