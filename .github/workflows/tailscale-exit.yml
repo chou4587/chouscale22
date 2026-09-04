@@ -44,6 +44,6 @@ jobs:
           while true
           do
             date
-            sudo tailscale status
+            sudo tailscale ip
             sleep 300
           done
