@@ -35,8 +35,8 @@ jobs:
 
       - name: Check Tailscale status
         run: |
-          sudo tailscale status
-          sudo tailscale netcheck
+          sudo tailscale ip
+          sudo tailscale status --self
 
       - name: Keep alive
         run: |
