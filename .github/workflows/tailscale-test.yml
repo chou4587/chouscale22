@@ -1,15 +1,6 @@
 name: Tailscale Exit Handoff Test
 
 on:
-  schedule:
-    # 北京时间 19:30：第一次启动
-    - cron: "30 19 * * *"
-      timezone: "Asia/Shanghai"
-
-    # 北京时间 19:45：第二次启动
-    - cron: "45 19 * * *"
-      timezone: "Asia/Shanghai"
-
   workflow_dispatch:
 
 jobs:
@@ -49,28 +40,16 @@ jobs:
             -o tailscale0 \
             -j ACCEPT
 
-      - name: Show Exit Node status
+      - name: Keep alive for 5 hours 47 minutes
         run: |
-          echo "===== Tailscale status ====="
-          sudo tailscale status
-          echo
-          echo "===== Tailscale IP ====="
-          sudo tailscale ip
-          echo
-          echo "===== Current time ====="
-          date
-
-      - name: Keep alive for 10 minutes
-        run: |
-          echo "Test Exit Node is active."
-          echo "It will logout after 10 minutes."
-          sleep 600
+          echo "Tailscale Exit Node started."
+          echo "Hostname: github-exit-test"
+          echo "Running for 5 hours 47 minutes."
+          sleep 20820
 
       - name: Graceful logout
         if: always()
         run: |
-          echo "===== Logging out test Exit Node ====="
+          echo "Stopping Tailscale Exit Node..."
           sudo tailscale logout || true
-          echo "===== Final Tailscale status ====="
-          sudo tailscale status || true
-          date
+          echo "Tailscale Exit Node stopped."
