@@ -1,32 +1,16 @@
-name: Tailscale Exit Test
+name: Tailscale Exit Handoff Test
 
 on:
   schedule:
-    # 北京时间 12:30
-    - cron: "30 12 * * *"
+    # 北京时间 19:30：第一次启动
+    - cron: "30 19 * * *"
       timezone: "Asia/Shanghai"
 
-    # 北京时间 13:00
-    - cron: "0 13 * * *"
-      timezone: "Asia/Shanghai"
-
-    # 北京时间 13:30
-    - cron: "30 13 * * *"
-      timezone: "Asia/Shanghai"
-
-    # 北京时间 14:00
-    - cron: "0 14 * * *"
-      timezone: "Asia/Shanghai"
-
-    # 北京时间 14:30：停止测试
-    - cron: "30 14 * * *"
+    # 北京时间 19:45：第二次启动
+    - cron: "45 19 * * *"
       timezone: "Asia/Shanghai"
 
   workflow_dispatch:
-
-concurrency:
-  group: tailscale-exit-test
-  cancel-in-progress: true
 
 jobs:
   exit-node-test:
@@ -35,41 +19,23 @@ jobs:
     steps:
 
       - name: Install Tailscale
-        if: github.event.schedule != '30 14 * * *'
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
 
       - name: Connect Tailscale
-        if: github.event.schedule != '30 14 * * *'
         run: |
-          case "${{ github.event.schedule }}" in
-            "30 12 * * *")
-              HOSTNAME="github-exit-test-1230"
-              ;;
-            "0 13 * * *")
-              HOSTNAME="github-exit-test-1300"
-              ;;
-            "30 13 * * *")
-              HOSTNAME="github-exit-test-1330"
-              ;;
-            "0 14 * * *")
-              HOSTNAME="github-exit-test-1400"
-              ;;
-          esac
-
           sudo tailscale up \
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} \
             --advertise-exit-node \
             --accept-dns=false \
-            --hostname="$HOSTNAME"
+            --hostname=github-exit-test
 
       - name: Enable forwarding and NAT
-        if: github.event.schedule != '30 14 * * *'
         run: |
           sudo sysctl -w net.ipv4.ip_forward=1
           sudo sysctl -w net.ipv6.conf.all.forwarding=1
 
-          IFACE=$(ip route | grep default | awk '{print $5}')
+          IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
 
           sudo iptables -t nat -A POSTROUTING \
             -o "$IFACE" \
@@ -83,12 +49,28 @@ jobs:
             -o tailscale0 \
             -j ACCEPT
 
-      - name: Keep alive
-        if: github.event.schedule != '30 14 * * *'
+      - name: Show Exit Node status
         run: |
-          sleep 21600
+          echo "===== Tailscale status ====="
+          sudo tailscale status
+          echo
+          echo "===== Tailscale IP ====="
+          sudo tailscale ip
+          echo
+          echo "===== Current time ====="
+          date
 
-      - name: Cleanup
-        if: always() && github.event.schedule != '30 14 * * *'
+      - name: Keep alive for 10 minutes
         run: |
+          echo "Test Exit Node is active."
+          echo "It will logout after 10 minutes."
+          sleep 600
+
+      - name: Graceful logout
+        if: always()
+        run: |
+          echo "===== Logging out test Exit Node ====="
           sudo tailscale logout || true
+          echo "===== Final Tailscale status ====="
+          sudo tailscale status || true
+          date
