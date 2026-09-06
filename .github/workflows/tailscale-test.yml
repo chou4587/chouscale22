@@ -3,6 +3,10 @@ name: Tailscale Exit Handoff Test
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: write
+
 jobs:
   exit-node-test:
     runs-on: ubuntu-latest
@@ -10,7 +14,7 @@ jobs:
     steps:
       - name: Install Tailscale
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
+          curl -fsSL https://tailscale.com/install.sh | sh >/dev/null 2>&1
 
       - name: Connect Tailscale
         run: |
@@ -22,81 +26,244 @@ jobs:
 
       - name: Enable forwarding and NAT
         run: |
-          sudo sysctl -w net.ipv4.ip_forward=1
-          sudo sysctl -w net.ipv6.conf.all.forwarding=1
-
-          IFACE=$(ip route | grep default | awk '{print $5}' | head -1)
-
-          sudo iptables -t nat -A POSTROUTING \
-            -o "$IFACE" \
-            -j MASQUERADE
-
-          sudo iptables -A FORWARD \
-            -i tailscale0 \
-            -j ACCEPT
-
-          sudo iptables -A FORWARD \
-            -o tailscale0 \
-            -j ACCEPT
+          sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
+          sudo sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
+          IFACE=$(ip route | awk '/default/ {print $5; exit}')
+          sudo iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
+          sudo iptables -A FORWARD -i tailscale0 -j ACCEPT
+          sudo iptables -A FORWARD -o tailscale0 -j ACCEPT
 
       - name: Install Hermes
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash >/dev/null 2>&1
           export PATH="$HOME/.local/bin:$PATH"
+          hermes --version >/dev/null
 
-          hermes --version
-
-      - name: Install uv and Hermes Web Dashboard
+      - name: Restore Hermes data
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -LsSf https://astral.sh/uv/install.sh | sh
+          ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=hermes-persistent-data&per_page=1" --jq '.artifacts[0].id // empty')
+          if [ -n "$ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > /tmp/hermes.zip
+            unzip -q /tmp/hermes.zip -d /tmp/hermes-restore
+            tar -xzf /tmp/hermes-restore/hermes-data.tar.gz -C "$HOME"
+            echo "Hermes data restored."
+          else
+            echo "No previous Hermes data."
+          fi
 
+      - name: Install Dashboard
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
           export PATH="$HOME/.local/bin:$PATH"
-
           cd "$HOME/.hermes/hermes-agent"
+          uv pip install --python ./venv/bin/python -e ".[web,pty]" >/dev/null 2>&1
 
-          uv pip install --python ./venv/bin/python -e ".[web,pty]"
-
-      - name: Configure Hermes Dashboard
+      - name: Configure Hermes
         run: |
           mkdir -p "$HOME/.hermes"
-
-          cat >> "$HOME/.hermes/.env" <<'EOF'
+          cat > "$HOME/.hermes/.env" <<'EOF'
           HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
           HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=hermes123456
           EOF
-
           chmod 600 "$HOME/.hermes/.env"
 
-      - name: Start Hermes Dashboard
+      - name: Start Dashboard
         run: |
           export PATH="$HOME/.local/bin:$PATH"
-
           nohup hermes dashboard \
             --host 0.0.0.0 \
             --port 9119 \
             --no-open \
             > "$HOME/hermes-dashboard.log" 2>&1 &
-
           sleep 10
+          echo "Hermes Dashboard started."
+          echo "Tailscale IP: $(sudo tailscale ip -4)"
 
-          echo "===== Hermes Dashboard ====="
-          cat "$HOME/hermes-dashboard.log" || true
+      - name: Wait 30 minutes
+        run: sleep 1800
 
-          echo "===== Tailscale IP ====="
-          sudo tailscale ip -4
-
-      - name: Keep alive for 5 hours 47 minutes
+      - name: Prepare save 1
         run: |
-          echo "Tailscale Exit Node started."
-          echo "Hermes Dashboard started on port 9119."
-          echo "Running for 5 hours 47 minutes."
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
 
-          sleep 20820
+      - name: Upload save 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 2
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 3
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 4
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 4
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 5
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 5
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 6
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 6
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 7
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 7
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 8
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 8
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 9
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 9
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 10
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 10
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Wait 30 minutes
+        run: sleep 1800
+
+      - name: Prepare save 11
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload save 11
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
+
+      - name: Final 17 minutes
+        run: sleep 1020
+
+      - name: Final save
+        if: always()
+        run: |
+          tar --exclude="$HOME/.hermes/.env" -czf /tmp/hermes-data.tar.gz -C "$HOME" .hermes
+
+      - name: Upload final save
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data
+          path: /tmp/hermes-data.tar.gz
+          overwrite: true
+          retention-days: 90
 
       - name: Graceful logout
         if: always()
         run: |
-          echo "Stopping Tailscale Exit Node..."
           sudo tailscale logout || true
-          echo "Tailscale Exit Node stopped."
