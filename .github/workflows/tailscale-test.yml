@@ -39,10 +39,6 @@ jobs:
             -o tailscale0 \
             -j ACCEPT
 
-      # =========================
-      # Hermes
-      # =========================
-
       - name: Install Hermes
         run: |
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
@@ -51,8 +47,10 @@ jobs:
 
           hermes --version
 
-      - name: Install Hermes Web Dashboard
+      - name: Install uv and Hermes Web Dashboard
         run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+
           export PATH="$HOME/.local/bin:$PATH"
 
           cd "$HOME/.hermes/hermes-agent"
@@ -84,17 +82,12 @@ jobs:
           echo "===== Hermes Dashboard ====="
           cat "$HOME/hermes-dashboard.log" || true
 
-          echo "===== Tailscale ====="
+          echo "===== Tailscale IP ====="
           sudo tailscale ip -4
-
-      # =========================
-      # Keep alive
-      # =========================
 
       - name: Keep alive for 5 hours 47 minutes
         run: |
           echo "Tailscale Exit Node started."
-          echo "Hostname: github-exit-test"
           echo "Hermes Dashboard started on port 9119."
           echo "Running for 5 hours 47 minutes."
 
