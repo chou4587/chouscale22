@@ -54,7 +54,9 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
 
           cd "$HOME/.hermes/hermes-agent"
-          uv pip install --system -e ".[web,pty]"
+
+          uv pip install --python ./venv/bin/python -e ".[web,pty]"
+
       - name: Configure Hermes Dashboard
         run: |
           mkdir -p "$HOME/.hermes"
