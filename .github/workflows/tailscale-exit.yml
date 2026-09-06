@@ -56,7 +56,7 @@ jobs:
           do
             date
             sudo tailscale ip
-            sleep 300
+            sleep 3000
           done
 
       - name: Cleanup Tailscale
