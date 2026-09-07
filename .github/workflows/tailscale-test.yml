@@ -66,7 +66,8 @@ jobs:
               | select(.expired == false and (.name == "hermes-persistent-data" or (.name | startswith("hermes-persistent-data-"))))
               | [.created_at, .id]
               | @tsv
-            ' | sort -r | cut -f2 | while read -r ID; do
+            ' | sort -r | cut -f2 > /tmp/hermes-artifact-ids
+          while read -r ID; do
               rm -rf /tmp/hermes-restore/* /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
 
               if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > /tmp/hermes.zip 2>/dev/null; then
@@ -108,6 +109,8 @@ jobs:
               echo "Restored Hermes data from artifact $ID with valid Weixin credentials."
               break
             done
+
+          rm -f /tmp/hermes-artifact-ids
 
           if [ "$FOUND" -ne 1 ]; then
             echo "ERROR: No Hermes backup containing valid Weixin credentials was found."
