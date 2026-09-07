@@ -1,6 +1,6 @@
 # Tailscale Exit Handoff Test
-# Created: 2026-09-07 14:59 (UTC+8)
-# Total lines: 577
+# Created: 2026-09-07 16:39 (UTC+8)
+# Total lines: 643
 
 name: Tailscale Exit Handoff Test
 
@@ -50,6 +50,7 @@ jobs:
       - name: Restore Hermes data
         env:
           GH_TOKEN: ${{ github.token }}
+          WEIXIN_BACKUP_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           ID=$(
             gh api --paginate \
@@ -86,7 +87,23 @@ jobs:
 
             rm -f "$HOME/.hermes/.env"
             rm -f "$HOME/.hermes/auth.json"
-            rm -rf "$HOME/.hermes/weixin/accounts"
+
+            # Weixin credentials are restored separately in encrypted form.
+            if [ -f /tmp/hermes-restore/weixin-credentials.enc ]; then
+              WEIXIN_BACKUP_KEY="$WEIXIN_BACKUP_KEY" openssl enc -d -aes-256-cbc -pbkdf2 \
+                -pass env:WEIXIN_BACKUP_KEY \
+                -in /tmp/hermes-restore/weixin-credentials.enc \
+                -out /tmp/weixin-credentials.tar.gz
+              tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME"
+              rm -f /tmp/weixin-credentials.tar.gz
+            fi
+
+            if [ -f /tmp/hermes-restore/weixin-env.enc ]; then
+              WEIXIN_BACKUP_KEY="$WEIXIN_BACKUP_KEY" openssl enc -d -aes-256-cbc -pbkdf2 \
+                -pass env:WEIXIN_BACKUP_KEY \
+                -in /tmp/hermes-restore/weixin-env.enc \
+                -out /tmp/weixin.env
+            fi
 
             rm -rf /tmp/hermes-restore
             rm -f /tmp/hermes.zip
@@ -108,9 +125,16 @@ jobs:
           HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=hermes123456
           EOF
 
+          if [ -f /tmp/weixin.env ]; then
+            cat /tmp/weixin.env >> "$HOME/.hermes/.env"
+            rm -f /tmp/weixin.env
+          fi
+
           chmod 600 "$HOME/.hermes/.env"
 
       - name: Install save tools
+        env:
+          WEIXIN_BACKUP_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           if ! command -v rsync >/dev/null 2>&1; then
             sudo apt-get update -qq
@@ -121,10 +145,16 @@ jobs:
           #!/usr/bin/env bash
           set -euo pipefail
 
+          export WEIXIN_BACKUP_KEY="$(cat "$HOME/.weixin-backup-key")"
+
           OUT="/tmp/hermes-data.tar.gz"
           SNAP="/tmp/hermes-snapshot"
+          WXOUT="/tmp/weixin-credentials.tar.gz"
+          WXENC="/tmp/weixin-credentials.enc"
+          WXENV="/tmp/weixin.env"
+          WXENVENC="/tmp/weixin-env.enc"
 
-          rm -f "$OUT"
+          rm -f "$OUT" "$WXOUT" "$WXENC" "$WXENV" "$WXENVENC"
           rm -rf "$SNAP"
           mkdir -p "$SNAP/.hermes"
 
@@ -172,14 +202,42 @@ jobs:
           PY
           fi
 
-          tar -czf "$OUT" -C "$SNAP" .hermes
+          # Weixin credentials contain a login token. The repository is public, so
+          # never place these credentials in a plain artifact. Encrypt them using
+          # a key derived from the existing GitHub secret TAILSCALE_AUTH_KEY.
+          if [ -d "$HOME/.hermes/weixin/accounts" ] && find "$HOME/.hermes/weixin/accounts" -type f -print -quit | grep -q .; then
+            tar -czf "$WXOUT" -C "$HOME/.hermes" weixin/accounts
+            openssl enc -aes-256-cbc -pbkdf2 -salt \
+              -pass env:WEIXIN_BACKUP_KEY \
+              -in "$WXOUT" -out "$WXENC"
+            cp "$WXENC" "$SNAP/weixin-credentials.enc"
+          fi
+
+          if [ -f "$HOME/.hermes/.env" ]; then
+            grep -E '^WEIXIN_(ACCOUNT_ID|TOKEN|BASE_URL|CDN_BASE_URL|DM_POLICY|ALLOW_ALL_USERS|ALLOWED_USERS|GROUP_POLICY|GROUP_ALLOWED_USERS|HOME_CHANNEL|HOME_CHANNEL_NAME)=' \
+              "$HOME/.hermes/.env" > "$WXENV" || true
+            if [ -s "$WXENV" ]; then
+              openssl enc -aes-256-cbc -pbkdf2 -salt \
+                -pass env:WEIXIN_BACKUP_KEY \
+                -in "$WXENV" -out "$WXENVENC"
+              cp "$WXENVENC" "$SNAP/weixin-env.enc"
+            fi
+          fi
+
+          TAR_ITEMS=(.hermes)
+          [ -f "$SNAP/weixin-credentials.enc" ] && TAR_ITEMS+=(weixin-credentials.enc)
+          [ -f "$SNAP/weixin-env.enc" ] && TAR_ITEMS+=(weixin-env.enc)
+          tar -czf "$OUT" -C "$SNAP" "${TAR_ITEMS[@]}"
 
           rm -rf "$SNAP"
+          rm -f "$WXOUT" "$WXENC" "$WXENV" "$WXENVENC"
 
           test -s "$OUT"
           EOF
 
           chmod +x "$HOME/save-hermes.sh"
+          printf '%s' "$WEIXIN_BACKUP_KEY" > "$HOME/.weixin-backup-key"
+          chmod 600 "$HOME/.weixin-backup-key"
 
       - name: Start Dashboard
         run: |
@@ -191,6 +249,13 @@ jobs:
           sleep 10
           echo "Hermes Dashboard started."
           echo "Tailscale IP: $(sudo tailscale ip -4)"
+
+      - name: Start Hermes Gateway
+        run: |
+          if grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
+            nohup hermes gateway > /dev/null 2>&1 &
+            sleep 5
+          fi
 
       - name: Wait 30 minutes - Save 1
         run: sleep 1800
@@ -574,4 +639,5 @@ jobs:
       - name: Graceful logout
         if: always()
         run: |
+          rm -f "$HOME/.weixin-backup-key"
           sudo tailscale logout || true
