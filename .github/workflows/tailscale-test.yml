@@ -322,36 +322,6 @@ jobs:
           echo "Weixin credentials restored and gateway process is alive."
 
       - name: Approve Weixin pairing code
-        if: ${{ inputs.pairing_code != '' }}
-        run: |
-          set -e
-          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-          CODE="${{ inputs.pairing_code }}"
-          if ! printf '%s' "$CODE" | grep -Eq '^[A-Za-z0-9]{8}$'; then
-            echo "ERROR: pairing_code must be exactly 8 letters/numbers."
-            exit 1
-          fi
-          hermes pairing approve weixin "$CODE"
-          echo "Weixin pairing approval command completed."
-
-      - name: Save immediately after Gateway start
-        id: prepare_pairing_save
-        continue-on-error: true
-        run: |
-          "$HOME/save-hermes.sh"
-
-      - name: Upload immediate pairing save
-        id: upload_pairing_save
-        if: steps.prepare_pairing_save.outcome == 'success'
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: hermes-persistent-data-${{ github.run_id }}-pairing
-          path: /tmp/hermes-data.tar.gz
-          retention-days: 90
-          if-no-files-found: error
-
-      - name: Approve Weixin pairing code
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         run: |
           set -e
