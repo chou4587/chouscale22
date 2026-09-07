@@ -321,13 +321,42 @@ jobs:
           echo "Hermes Gateway is running."
           echo "Weixin credentials restored and gateway process is alive."
 
-      - name: Show Weixin pairing information
+      - name: Wait for Weixin pairing request
         if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
-          echo "=== Weixin pairing information ==="
-          echo "If Hermes generated a pairing code, it will be shown below:"
-          grep -Ein 'pairing|pair|code|weixin' "$HOME/hermes-gateway.log" | tail -n 80 || true
-          echo "=== End pairing information ==="
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+          echo "=== Weixin pairing ==="
+          echo "现在请用你的微信给 Hermes 机器人发送一条消息。"
+          echo "微信收到 Hermes 返回的 8 位配对码后，把这个配对码记下来。"
+          echo "GitHub 日志不会打印配对码，这是 Hermes 的安全设计。"
+          echo
+
+          FOUND=0
+          for i in $(seq 1 60); do
+            echo "--- checking pairing requests ($i/60) ---"
+            hermes pairing list || true
+
+            if hermes pairing list 2>/dev/null | grep -q '^ Pending Pairing Requests'; then
+              FOUND=1
+              echo
+              echo "检测到待配对请求。"
+              echo "请查看微信里 Hermes 发来的 8 位配对码。"
+              break
+            fi
+
+            sleep 10
+          done
+
+          if [ "$FOUND" -ne 1 ]; then
+            echo
+            echo "ERROR: 10 分钟内没有检测到 Weixin 配对请求。"
+            echo "请确认已经用微信向 Hermes 账号发送过消息，然后重新运行 pair。"
+            exit 1
+          fi
+
+          echo "=== End Weixin pairing wait ==="
 
       - name: Approve Weixin pairing code
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
