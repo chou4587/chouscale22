@@ -6,6 +6,24 @@ name: Tailscale Exit Handoff Test
 
 on:
   workflow_dispatch:
+    inputs:
+      pairing_mode:
+        description: "首次配对选择 pair；以后正常运行选择 normal"
+        required: true
+        default: normal
+        type: choice
+        options:
+          - normal
+          - pair
+      pairing_code:
+        description: "第二次运行批准微信配对时填写8位配对码；首次 pair 留空"
+        required: false
+        type: string
+    inputs:
+      pairing_code:
+        description: "Weixin pairing code (only needed when approving a new user)"
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -308,6 +326,84 @@ jobs:
 
           echo "Hermes Gateway is running."
           echo "Weixin credentials restored and gateway process is alive."
+
+      - name: Approve Weixin pairing code
+        if: ${{ inputs.pairing_code != '' }}
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          CODE="${{ inputs.pairing_code }}"
+          if ! printf '%s' "$CODE" | grep -Eq '^[A-Za-z0-9]{8}$'; then
+            echo "ERROR: pairing_code must be exactly 8 letters/numbers."
+            exit 1
+          fi
+          hermes pairing approve weixin "$CODE"
+          echo "Weixin pairing approval command completed."
+
+      - name: Save immediately after Gateway start
+        id: prepare_pairing_save
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload immediate pairing save
+        id: upload_pairing_save
+        if: steps.prepare_pairing_save.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-pairing
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Approve Weixin pairing code
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          CODE="${{ inputs.pairing_code }}"
+          if ! printf '%s' "$CODE" | grep -Eq '^[A-Za-z0-9]{8}$'; then
+            echo "ERROR: pairing_code must be exactly 8 letters/numbers."
+            exit 1
+          fi
+          hermes pairing approve weixin "$CODE"
+          echo "Weixin pairing approval completed."
+
+      - name: Save pairing state immediately
+        if: ${{ inputs.pairing_mode == 'pair' || (inputs.pairing_mode == 'normal' && inputs.pairing_code != '') }}
+        id: prepare_pairing_save
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload pairing state
+        if: ${{ inputs.pairing_mode == 'pair' || (inputs.pairing_mode == 'normal' && inputs.pairing_code != '') }}
+        id: upload_pairing_save
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-pairing
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Finish pairing setup run
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          echo "Pairing state has been saved."
+          echo "This setup run will now end so the next run can restore the pending pairing state."
+          exit 0
+
+      - name: Verify pairing approval
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          if ! hermes pairing list | grep -qiE 'Approved|approved'; then
+            echo "ERROR: Weixin pairing approval was not confirmed."
+            hermes pairing list || true
+            exit 1
+          fi
+          echo "Weixin pairing approval is present."
 
       - name: Wait 30 minutes - Save 1
         run: sleep 1800
