@@ -1,6 +1,6 @@
 # Tailscale Exit Handoff Test
 # Created: 2026-09-07 16:39 (UTC+8)
-# Total lines: 643
+# Total lines: 791
 
 name: Tailscale Exit Handoff Test
 
@@ -19,12 +19,6 @@ on:
         description: "第二次运行批准微信配对时填写8位配对码；首次 pair 留空"
         required: false
         type: string
-    inputs:
-      pairing_code:
-        description: "Weixin pairing code (only needed when approving a new user)"
-        required: false
-        type: string
-
 permissions:
   contents: read
   actions: write
