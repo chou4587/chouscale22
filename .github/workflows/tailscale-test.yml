@@ -1,3 +1,7 @@
+# Tailscale Exit Handoff Test
+# Created: 2026-09-07 14:59 (UTC+8)
+# Total lines: 577
+
 name: Tailscale Exit Handoff Test
 
 on:
@@ -177,4 +181,397 @@ jobs:
 
           chmod +x "$HOME/save-hermes.sh"
 
-  
+      - name: Start Dashboard
+        run: |
+          nohup hermes dashboard \
+            --host 0.0.0.0 \
+            --port 9119 \
+            --no-open \
+            > "$HOME/hermes-dashboard.log" 2>&1 &
+          sleep 10
+          echo "Hermes Dashboard started."
+          echo "Tailscale IP: $(sudo tailscale ip -4)"
+
+      - name: Wait 30 minutes - Save 1
+        run: sleep 1800
+
+      - name: Prepare save 1
+        id: prepare_save_1
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 1
+        id: upload_save_1
+        if: steps.prepare_save_1.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-01
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 1
+        if: steps.upload_save_1.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > "$HOME/cleanup-hermes-artifacts.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          CURRENT_ID="${1:-}"
+
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '
+              .artifacts[]
+              | select(
+                  .expired == false
+                  and (
+                    .name == "hermes-persistent-data"
+                    or (.name | startswith("hermes-persistent-data-"))
+                  )
+                )
+              | [.created_at, .id]
+              | @tsv
+            ' |
+          sort |
+          while IFS=$'\t' read -r CREATED ID; do
+            if [ "$ID" != "$CURRENT_ID" ]; then
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID" \
+                >/dev/null 2>&1 || true
+            fi
+          done
+          EOF
+
+          chmod +x "$HOME/cleanup-hermes-artifacts.sh"
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_1.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 2
+        run: sleep 1800
+
+      - name: Prepare save 2
+        id: prepare_save_2
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 2
+        id: upload_save_2
+        if: steps.prepare_save_2.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-02
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 2
+        if: steps.upload_save_2.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_2.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 3
+        run: sleep 1800
+
+      - name: Prepare save 3
+        id: prepare_save_3
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 3
+        id: upload_save_3
+        if: steps.prepare_save_3.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-03
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 3
+        if: steps.upload_save_3.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_3.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 4
+        run: sleep 1800
+
+      - name: Prepare save 4
+        id: prepare_save_4
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 4
+        id: upload_save_4
+        if: steps.prepare_save_4.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-04
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 4
+        if: steps.upload_save_4.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_4.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 5
+        run: sleep 1800
+
+      - name: Prepare save 5
+        id: prepare_save_5
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 5
+        id: upload_save_5
+        if: steps.prepare_save_5.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-05
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 5
+        if: steps.upload_save_5.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_5.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 6
+        run: sleep 1800
+
+      - name: Prepare save 6
+        id: prepare_save_6
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 6
+        id: upload_save_6
+        if: steps.prepare_save_6.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-06
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 6
+        if: steps.upload_save_6.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_6.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 7
+        run: sleep 1800
+
+      - name: Prepare save 7
+        id: prepare_save_7
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 7
+        id: upload_save_7
+        if: steps.prepare_save_7.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-07
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 7
+        if: steps.upload_save_7.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_7.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 8
+        run: sleep 1800
+
+      - name: Prepare save 8
+        id: prepare_save_8
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 8
+        id: upload_save_8
+        if: steps.prepare_save_8.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-08
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 8
+        if: steps.upload_save_8.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_8.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 9
+        run: sleep 1800
+
+      - name: Prepare save 9
+        id: prepare_save_9
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 9
+        id: upload_save_9
+        if: steps.prepare_save_9.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-09
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 9
+        if: steps.upload_save_9.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_9.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 10
+        run: sleep 1800
+
+      - name: Prepare save 10
+        id: prepare_save_10
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 10
+        id: upload_save_10
+        if: steps.prepare_save_10.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-10
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 10
+        if: steps.upload_save_10.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_10.outputs.artifact-id }}"
+
+      - name: Wait 30 minutes - Save 11
+        run: sleep 1800
+
+      - name: Prepare save 11
+        id: prepare_save_11
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Upload save 11
+        id: upload_save_11
+        if: steps.prepare_save_11.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-11
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Cleanup after save 11
+        if: steps.upload_save_11.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_11.outputs.artifact-id }}"
+
+      - name: Final wait 17 minutes
+        run: sleep 1020
+
+      - name: Final prepare save
+        id: prepare_save_final
+        continue-on-error: true
+        run: |
+          "$HOME/save-hermes.sh"
+
+      - name: Final upload
+        id: upload_save_final
+        if: steps.prepare_save_final.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-final
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Final cleanup
+        if: steps.upload_save_final.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          "$HOME/cleanup-hermes-artifacts.sh" \
+            "${{ steps.upload_save_final.outputs.artifact-id }}"
+
+      - name: Graceful logout
+        if: always()
+        run: |
+          sudo tailscale logout || true
