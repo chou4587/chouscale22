@@ -51,7 +51,7 @@ jobs:
 
       - name: Restore Hermes data
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WEIXIN_BACKUP_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
           set -euo pipefail
@@ -67,48 +67,55 @@ jobs:
               | [.created_at, .id]
               | @tsv
             ' | sort -r | cut -f2 > /tmp/hermes-artifact-ids
+
           while read -r ID; do
-              rm -rf /tmp/hermes-restore/* /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
+            rm -rf /tmp/hermes-restore/* /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
+            mkdir -p /tmp/hermes-restore/data
 
-              if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > /tmp/hermes.zip 2>/dev/null; then
-                continue
-              fi
-              if ! unzip -q /tmp/hermes.zip -d /tmp/hermes-restore 2>/dev/null; then
-                continue
-              fi
-              [ -f /tmp/hermes-restore/hermes-data.tar.gz ] || continue
+            if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > /tmp/hermes.zip 2>/dev/null; then
+              continue
+            fi
+            if ! unzip -q /tmp/hermes.zip -d /tmp/hermes-restore/zip 2>/dev/null; then
+              continue
+            fi
+            if [ ! -f /tmp/hermes-restore/zip/hermes-data.tar.gz ]; then
+              continue
+            fi
+            if ! tar -xzf /tmp/hermes-restore/zip/hermes-data.tar.gz -C /tmp/hermes-restore/data 2>/dev/null; then
+              continue
+            fi
 
-              rm -rf "$HOME/.hermes"
-              mkdir -p "$HOME"
-              tar -xzf /tmp/hermes-restore/hermes-data.tar.gz -C "$HOME" || continue
+            if [ ! -f /tmp/hermes-restore/data/weixin-env.enc ]; then
+              continue
+            fi
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 \
+              -pass env:WEIXIN_BACKUP_KEY \
+              -in /tmp/hermes-restore/data/weixin-env.enc \
+              -out /tmp/weixin.env 2>/dev/null; then
+              continue
+            fi
+            grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' /tmp/weixin.env || continue
+            grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' /tmp/weixin.env || continue
 
-              if [ ! -f /tmp/hermes-restore/weixin-env.enc ]; then
-                continue
-              fi
-              if ! openssl enc -d -aes-256-cbc -pbkdf2 \
+            rm -rf "$HOME/.hermes"
+            if ! [ -d /tmp/hermes-restore/data/.hermes ]; then
+              continue
+            fi
+            cp -a /tmp/hermes-restore/data/.hermes "$HOME/.hermes"
+
+            if [ -f /tmp/hermes-restore/data/weixin-credentials.enc ]; then
+              if openssl enc -d -aes-256-cbc -pbkdf2 \
                 -pass env:WEIXIN_BACKUP_KEY \
-                -in /tmp/hermes-restore/weixin-env.enc \
-                -out /tmp/weixin.env 2>/dev/null; then
-                continue
+                -in /tmp/hermes-restore/data/weixin-credentials.enc \
+                -out /tmp/weixin-credentials.tar.gz 2>/dev/null; then
+                tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME" 2>/dev/null || true
               fi
-              grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' /tmp/weixin.env || continue
-              grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' /tmp/weixin.env || continue
+            fi
 
-              cp /tmp/weixin.env "$HOME/.hermes/.env"
-
-              if [ -f /tmp/hermes-restore/weixin-credentials.enc ]; then
-                if openssl enc -d -aes-256-cbc -pbkdf2 \
-                  -pass env:WEIXIN_BACKUP_KEY \
-                  -in /tmp/hermes-restore/weixin-credentials.enc \
-                  -out /tmp/weixin-credentials.tar.gz 2>/dev/null; then
-                  tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME" 2>/dev/null || true
-                fi
-              fi
-
-              FOUND=1
-              echo "Restored Hermes data from artifact $ID with valid Weixin credentials."
-              break
-            done
+            FOUND=1
+            echo "Restored Hermes data from artifact $ID with valid Weixin credentials."
+            break
+          done < /tmp/hermes-artifact-ids
 
           rm -f /tmp/hermes-artifact-ids
 
@@ -117,8 +124,7 @@ jobs:
             exit 1
           fi
 
-          rm -rf /tmp/hermes-restore /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
-
+          rm -rf /tmp/hermes-restore /tmp/hermes.zip /tmp/weixin-credentials.tar.gz
       - name: Install Dashboard and Weixin dependencies
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
