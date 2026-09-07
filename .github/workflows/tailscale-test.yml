@@ -43,8 +43,10 @@ jobs:
 
       - name: Install Hermes
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash >/dev/null 2>&1
-          export PATH="$HOME/.local/bin:$PATH"
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.8.27 >/dev/null 2>&1
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
           hermes --version >/dev/null
 
       - name: Restore Hermes data
@@ -109,12 +111,15 @@ jobs:
             rm -f /tmp/hermes.zip
           fi
 
-      - name: Install Dashboard
+      - name: Install Dashboard and Weixin dependencies
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
           cd "$HOME/.hermes/hermes-agent"
           uv pip install --python ./venv/bin/python -e ".[web,pty]" >/dev/null 2>&1
+          uv pip install --python ./venv/bin/python aiohttp cryptography qrcode >/dev/null 2>&1
 
       - name: Configure Hermes
         run: |
@@ -252,10 +257,39 @@ jobs:
 
       - name: Start Hermes Gateway
         run: |
-          if grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
-            nohup hermes gateway > /dev/null 2>&1 &
-            sleep 5
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+          if ! grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
+            echo "ERROR: WEIXIN_ACCOUNT_ID was not restored. The Weixin login data is missing."
+            exit 1
           fi
+          if ! grep -q '^WEIXIN_TOKEN=' "$HOME/.hermes/.env"; then
+            echo "ERROR: WEIXIN_TOKEN was not restored. The Weixin login token is missing."
+            exit 1
+          fi
+
+          rm -f "$HOME/hermes-gateway.log" "$HOME/hermes-gateway.pid"
+          nohup hermes gateway run > "$HOME/hermes-gateway.log" 2>&1 &
+          echo $! > "$HOME/hermes-gateway.pid"
+
+          sleep 15
+
+          PID=$(cat "$HOME/hermes-gateway.pid")
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "ERROR: Hermes Gateway exited during startup."
+            cat "$HOME/hermes-gateway.log" || true
+            exit 1
+          fi
+
+          if grep -Eiq 'Weixin startup failed|WEIXIN_TOKEN is required|WEIXIN_ACCOUNT_ID is required|Traceback \(most recent call last\)' "$HOME/hermes-gateway.log"; then
+            echo "ERROR: Hermes Gateway started but Weixin initialization failed."
+            cat "$HOME/hermes-gateway.log" || true
+            exit 1
+          fi
+
+          echo "Hermes Gateway is running."
+          echo "Weixin credentials restored and gateway process is alive."
 
       - name: Wait 30 minutes - Save 1
         run: sleep 1800
