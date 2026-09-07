@@ -36,8 +36,16 @@ jobs:
           set -e
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-          command -v hermes
-          hermes --version >/dev/null
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          if ! command -v uv >/dev/null 2>&1; then
+            curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
+            export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          fi
+          command -v hermes >/dev/null 2>&1
+          command -v uv >/dev/null 2>&1
+          hermes --version >/dev/null 2>&1
+          uv --version >/dev/null 2>&1
 
       - name: Restore latest Hermes data
         env:
@@ -97,7 +105,9 @@ jobs:
 
       - name: Install Weixin dependencies
         run: |
-          export PATH="$HOME/.local/bin:$PATH"
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          command -v uv >/dev/null 2>&1
           cd "$HOME/.hermes/hermes-agent"
           uv pip install --python ./venv/bin/python aiohttp cryptography qrcode >/dev/null 2>&1
 
@@ -196,8 +206,9 @@ jobs:
             /tmp/hermes-snapshot/.hermes/
 
           if [ -f "$HOME/.hermes/state.db" ]; then
-            python3 - "$HOME/.hermes/state.db" \
-              /tmp/hermes-snapshot/.hermes/state.db <<'PY'
+            python3 - \
+              "$HOME/.hermes/state.db" \
+              "/tmp/hermes-snapshot/.hermes/state.db" <<'PY'
           import sqlite3
           import sys
           source = sqlite3.connect(sys.argv[1], timeout=30)
