@@ -54,62 +54,67 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           WEIXIN_BACKUP_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
         run: |
-          ID=$(
-            gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
-              --jq '
-                .artifacts[]
-                | select(
-                    .expired == false
-                    and (
-                      .name == "hermes-persistent-data"
-                      or (.name | startswith("hermes-persistent-data-"))
-                    )
-                  )
-                | [.created_at, .id]
-                | @tsv
-              ' |
-            sort |
-            tail -n 1 |
-            cut -f 2
-          )
+          set -euo pipefail
+          rm -rf /tmp/hermes-restore
+          mkdir -p /tmp/hermes-restore
 
-          if [ -n "$ID" ]; then
-            rm -rf /tmp/hermes-restore
-            mkdir -p /tmp/hermes-restore
+          FOUND=0
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
+            --jq '
+              .artifacts[]
+              | select(.expired == false and (.name == "hermes-persistent-data" or (.name | startswith("hermes-persistent-data-"))))
+              | [.created_at, .id]
+              | @tsv
+            ' | sort -r | cut -f2 | while read -r ID; do
+              rm -rf /tmp/hermes-restore/* /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
 
-            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" \
-              > /tmp/hermes.zip
+              if ! gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > /tmp/hermes.zip 2>/dev/null; then
+                continue
+              fi
+              if ! unzip -q /tmp/hermes.zip -d /tmp/hermes-restore 2>/dev/null; then
+                continue
+              fi
+              [ -f /tmp/hermes-restore/hermes-data.tar.gz ] || continue
 
-            unzip -q /tmp/hermes.zip -d /tmp/hermes-restore
+              rm -rf "$HOME/.hermes"
+              mkdir -p "$HOME"
+              tar -xzf /tmp/hermes-restore/hermes-data.tar.gz -C "$HOME" || continue
 
-            if [ -f /tmp/hermes-restore/hermes-data.tar.gz ]; then
-              tar -xzf /tmp/hermes-restore/hermes-data.tar.gz -C "$HOME"
-            fi
-
-            rm -f "$HOME/.hermes/.env"
-            rm -f "$HOME/.hermes/auth.json"
-
-            # Weixin credentials are restored separately in encrypted form.
-            if [ -f /tmp/hermes-restore/weixin-credentials.enc ]; then
-              WEIXIN_BACKUP_KEY="$WEIXIN_BACKUP_KEY" openssl enc -d -aes-256-cbc -pbkdf2 \
-                -pass env:WEIXIN_BACKUP_KEY \
-                -in /tmp/hermes-restore/weixin-credentials.enc \
-                -out /tmp/weixin-credentials.tar.gz
-              tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME"
-              rm -f /tmp/weixin-credentials.tar.gz
-            fi
-
-            if [ -f /tmp/hermes-restore/weixin-env.enc ]; then
-              WEIXIN_BACKUP_KEY="$WEIXIN_BACKUP_KEY" openssl enc -d -aes-256-cbc -pbkdf2 \
+              if [ ! -f /tmp/hermes-restore/weixin-env.enc ]; then
+                continue
+              fi
+              if ! openssl enc -d -aes-256-cbc -pbkdf2 \
                 -pass env:WEIXIN_BACKUP_KEY \
                 -in /tmp/hermes-restore/weixin-env.enc \
-                -out /tmp/weixin.env
-            fi
+                -out /tmp/weixin.env 2>/dev/null; then
+                continue
+              fi
+              grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' /tmp/weixin.env || continue
+              grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' /tmp/weixin.env || continue
 
-            rm -rf /tmp/hermes-restore
-            rm -f /tmp/hermes.zip
+              cp /tmp/weixin.env "$HOME/.hermes/.env"
+
+              if [ -f /tmp/hermes-restore/weixin-credentials.enc ]; then
+                if openssl enc -d -aes-256-cbc -pbkdf2 \
+                  -pass env:WEIXIN_BACKUP_KEY \
+                  -in /tmp/hermes-restore/weixin-credentials.enc \
+                  -out /tmp/weixin-credentials.tar.gz 2>/dev/null; then
+                  tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME" 2>/dev/null || true
+                fi
+              fi
+
+              FOUND=1
+              echo "Restored Hermes data from artifact $ID with valid Weixin credentials."
+              break
+            done
+
+          if [ "$FOUND" -ne 1 ]; then
+            echo "ERROR: No Hermes backup containing valid Weixin credentials was found."
+            exit 1
           fi
+
+          rm -rf /tmp/hermes-restore /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
 
       - name: Install Dashboard and Weixin dependencies
         run: |
@@ -218,16 +223,20 @@ jobs:
             cp "$WXENC" "$SNAP/weixin-credentials.enc"
           fi
 
-          if [ -f "$HOME/.hermes/.env" ]; then
-            grep -E '^WEIXIN_(ACCOUNT_ID|TOKEN|BASE_URL|CDN_BASE_URL|DM_POLICY|ALLOW_ALL_USERS|ALLOWED_USERS|GROUP_POLICY|GROUP_ALLOWED_USERS|HOME_CHANNEL|HOME_CHANNEL_NAME)=' \
-              "$HOME/.hermes/.env" > "$WXENV" || true
-            if [ -s "$WXENV" ]; then
-              openssl enc -aes-256-cbc -pbkdf2 -salt \
-                -pass env:WEIXIN_BACKUP_KEY \
-                -in "$WXENV" -out "$WXENVENC"
-              cp "$WXENVENC" "$SNAP/weixin-env.enc"
-            fi
+          if [ ! -f "$HOME/.hermes/.env" ]; then
+            echo "ERROR: Hermes .env is missing; refusing to create a backup." >&2
+            exit 1
           fi
+
+          grep -E '^WEIXIN_(ACCOUNT_ID|TOKEN|BASE_URL|CDN_BASE_URL|DM_POLICY|ALLOW_ALL_USERS|ALLOWED_USERS|GROUP_POLICY|GROUP_ALLOWED_USERS|HOME_CHANNEL|HOME_CHANNEL_NAME)=' \
+            "$HOME/.hermes/.env" > "$WXENV" || true
+          grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' "$WXENV" || { echo "ERROR: WEIXIN_ACCOUNT_ID missing; refusing backup." >&2; exit 1; }
+          grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' "$WXENV" || { echo "ERROR: WEIXIN_TOKEN missing; refusing backup." >&2; exit 1; }
+
+          openssl enc -aes-256-cbc -pbkdf2 -salt \
+            -pass env:WEIXIN_BACKUP_KEY \
+            -in "$WXENV" -out "$WXENVENC"
+          cp "$WXENVENC" "$SNAP/weixin-env.enc"
 
           TAR_ITEMS=(.hermes)
           [ -f "$SNAP/weixin-credentials.enc" ] && TAR_ITEMS+=(weixin-credentials.enc)

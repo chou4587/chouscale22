@@ -172,14 +172,24 @@ jobs:
         run: |
           mkdir -p /tmp/weixin-save
 
-          if [ -d "$HOME/.hermes/weixin/accounts" ]; then
-            tar -czf /tmp/weixin-save/weixin-credentials.tar.gz \
-              -C "$HOME/.hermes" weixin/accounts
-            openssl enc -aes-256-cbc -pbkdf2 -salt \
-              -pass env:WEIXIN_BACKUP_KEY \
-              -in /tmp/weixin-save/weixin-credentials.tar.gz \
-              -out /tmp/weixin-save/weixin-credentials.enc
+          if [ ! -d "$HOME/.hermes/weixin/accounts" ]; then
+            echo "ERROR: Weixin account directory was not created after QR login."
+            exit 1
           fi
+          if ! find "$HOME/.hermes/weixin/accounts" -type f -print -quit | grep -q .; then
+            echo "ERROR: Weixin account directory is empty after QR login."
+            exit 1
+          fi
+
+          tar -czf /tmp/weixin-save/weixin-credentials.tar.gz \
+            -C "$HOME/.hermes" weixin/accounts
+          openssl enc -aes-256-cbc -pbkdf2 -salt \
+            -pass env:WEIXIN_BACKUP_KEY \
+            -in /tmp/weixin-save/weixin-credentials.tar.gz \
+            -out /tmp/weixin-save/weixin-credentials.enc
+
+          grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' "$HOME/.hermes/.env" || { echo "ERROR: WEIXIN_ACCOUNT_ID missing."; exit 1; }
+          grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' "$HOME/.hermes/.env" || { echo "ERROR: WEIXIN_TOKEN missing."; exit 1; }
 
           grep -E '^WEIXIN_(ACCOUNT_ID|TOKEN|BASE_URL|CDN_BASE_URL|DM_POLICY|ALLOW_ALL_USERS|ALLOWED_USERS|GROUP_POLICY|GROUP_ALLOWED_USERS|HOME_CHANNEL|HOME_CHANNEL_NAME)=' \
             "$HOME/.hermes/.env" > /tmp/weixin-save/weixin.env
@@ -227,6 +237,10 @@ jobs:
 
           tar -czf /tmp/hermes-data.tar.gz -C /tmp/hermes-snapshot \
             .hermes weixin-credentials.enc weixin-env.enc
+
+          test -s /tmp/hermes-data.tar.gz
+          tar -tzf /tmp/hermes-data.tar.gz | grep -q '^weixin-env.enc$'
+          tar -tzf /tmp/hermes-data.tar.gz | grep -q '^weixin-credentials.enc$'
 
       - name: Upload encrypted Hermes backup
         uses: actions/upload-artifact@v4
