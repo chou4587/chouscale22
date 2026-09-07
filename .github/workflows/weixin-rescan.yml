@@ -34,7 +34,7 @@ jobs:
       - name: Install Hermes
         run: |
           set -e
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v0.20.6
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/bin" >> "$GITHUB_PATH"
@@ -245,6 +245,11 @@ jobs:
             "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
             --jq '.artifacts[] | select(.name == "hermes-persistent-data-${{ github.run_id }}-weixin-rescan") | .id' \
             | tail -n 1)
+
+          if [ -z "$CURRENT_ID" ]; then
+            echo "No new backup was uploaded; keeping existing Hermes backups."
+            exit 0
+          fi
 
           gh api --paginate \
             "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
