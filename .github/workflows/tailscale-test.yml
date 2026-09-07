@@ -321,6 +321,14 @@ jobs:
           echo "Hermes Gateway is running."
           echo "Weixin credentials restored and gateway process is alive."
 
+      - name: Show Weixin pairing information
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          echo "=== Weixin pairing information ==="
+          echo "If Hermes generated a pairing code, it will be shown below:"
+          grep -Ein 'pairing|pair|code|weixin' "$HOME/hermes-gateway.log" | tail -n 80 || true
+          echo "=== End pairing information ==="
+
       - name: Approve Weixin pairing code
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         run: |
