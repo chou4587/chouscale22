@@ -61,7 +61,7 @@ jobs:
 
       - name: Install Hermes
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.8.27 >/dev/null 2>&1
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.8.31 >/dev/null 2>&1
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/bin" >> "$GITHUB_PATH"
@@ -316,26 +316,168 @@ jobs:
           echo "Hermes Dashboard started."
           echo "Tailscale IP: $(sudo tailscale ip -4)"
 
-      - name: Start Hermes Gateway
+      - name: Prepare SSH Weixin setup
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          cat > "$HOME/weixin-setup.sh" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          HERMES_HOME="$HOME/.hermes"
+          AGENT_DIR="$HERMES_HOME/hermes-agent"
+
+          echo "=== Hermes Weixin 首次设置 ==="
+          echo ""
+          echo "第一步：下面将显示微信二维码，请用微信扫码。"
+          echo "扫码成功后会立即保存微信登录状态，不等待。"
+          echo ""
+
+          rm -f /tmp/weixin_qr_saved /tmp/weixin_pairing_saved /tmp/weixin_login_result.json
+
+          cd "$AGENT_DIR"
+          ./venv/bin/python - <<'PY'
+          import asyncio
+          import json
+          import os
+          from pathlib import Path
+          from gateway.platforms.weixin import qr_login
+
+          result = asyncio.run(
+              qr_login(os.path.expanduser("~/.hermes"), timeout_seconds=480)
+          )
+          if not result:
+              raise SystemExit("Weixin QR login did not complete.")
+          Path("/tmp/weixin_login_result.json").write_text(
+              json.dumps(result, ensure_ascii=False), encoding="utf-8"
+          )
+          PY
+
+          ACCOUNT_ID=$(python3 -c 'import json; print(json.load(open("/tmp/weixin_login_result.json"))["account_id"])')
+          TOKEN=$(python3 -c 'import json; print(json.load(open("/tmp/weixin_login_result.json"))["token"])')
+          BASE_URL=$(python3 -c 'import json; print(json.load(open("/tmp/weixin_login_result.json")).get("base_url", ""))')
+          USER_ID=$(python3 -c 'import json; print(json.load(open("/tmp/weixin_login_result.json")).get("user_id", ""))')
+
+          {
+            echo 'HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin'
+            echo 'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=hermes123456'
+            printf 'WEIXIN_ACCOUNT_ID=%s\n' "$ACCOUNT_ID"
+            printf 'WEIXIN_TOKEN=%s\n' "$TOKEN"
+            [ -n "$BASE_URL" ] && printf 'WEIXIN_BASE_URL=%s\n' "$BASE_URL"
+            echo 'WEIXIN_CDN_BASE_URL=https://novac2c.cdn.weixin.qq.com/c2c'
+            echo 'WEIXIN_DM_POLICY=pairing'
+            echo 'WEIXIN_ALLOW_ALL_USERS=false'
+            echo 'WEIXIN_ALLOWED_USERS='
+            echo 'WEIXIN_GROUP_POLICY=disabled'
+            echo 'WEIXIN_GROUP_ALLOWED_USERS='
+            [ -n "$USER_ID" ] && printf 'WEIXIN_HOME_CHANNEL=%s\n' "$USER_ID"
+          } > "$HERMES_HOME/.env"
+          chmod 600 "$HERMES_HOME/.env"
+          rm -f /tmp/weixin_login_result.json
+
+          echo ""
+          echo "=== 微信扫码登录成功 ==="
+          echo "立即保存微信登录凭据..."
+          "$HOME/save-hermes.sh" pair-pending
+          touch /tmp/weixin_qr_saved
+          echo "微信登录状态已立即保存。"
+
+          echo ""
+          echo "启动 Hermes Gateway..."
+          rm -f "$HOME/hermes-gateway.log" "$HOME/hermes-gateway.pid"
+          nohup hermes gateway run > "$HOME/hermes-gateway.log" 2>&1 &
+          echo $! > "$HOME/hermes-gateway.pid"
+          sleep 15
+          PID=$(cat "$HOME/hermes-gateway.pid")
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "ERROR: Hermes Gateway exited during startup."
+            cat "$HOME/hermes-gateway.log" || true
+            exit 1
+          fi
+          if grep -Eiq 'Weixin startup failed|WEIXIN_TOKEN is required|WEIXIN_ACCOUNT_ID is required|Traceback \(most recent call last\)' "$HOME/hermes-gateway.log"; then
+            echo "ERROR: Hermes Gateway Weixin initialization failed."
+            cat "$HOME/hermes-gateway.log" || true
+            exit 1
+          fi
+          echo "Hermes Gateway 已启动。"
+
+          echo ""
+          echo "第二步：现在用微信给 Hermes 机器人发送一条消息。"
+          echo "等待微信产生配对请求..."
+
+          FOUND=0
+          for i in $(seq 1 180); do
+            PAIRING_DIR="$HERMES_HOME/platforms/pairing"
+            [ -d "$PAIRING_DIR" ] || PAIRING_DIR="$HERMES_HOME/pairing"
+            if [ -s "$PAIRING_DIR/weixin-pending.json" ]; then
+              FOUND=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$FOUND" -ne 1 ]; then
+            echo "ERROR: 6 分钟内没有检测到微信配对请求。"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== 检测到微信配对请求 ==="
+          echo "请查看微信中的 8 位配对码，然后在这里输入。"
+          read -r -p "请输入 8 位配对码: " CODE
+          if ! printf '%s' "$CODE" | grep -Eq '^[A-Za-z0-9]{8}$'; then
+            echo "ERROR: 配对码必须是 8 位字母/数字。"
+            exit 1
+          fi
+
+          hermes pairing approve weixin "$CODE"
+
+          PAIRING_DIR="$HERMES_HOME/platforms/pairing"
+          [ -d "$PAIRING_DIR" ] || PAIRING_DIR="$HERMES_HOME/pairing"
+          if [ ! -s "$PAIRING_DIR/weixin-approved.json" ]; then
+            echo "ERROR: 配对批准文件没有生成。"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== 微信配对完成 ==="
+          echo "立即保存已批准的配对状态..."
+          "$HOME/save-hermes.sh" approved
+          touch /tmp/weixin_pairing_saved
+          echo "微信登录 + 配对状态已经立即保存。"
+          echo "=== 首次微信设置完成 ==="
+          EOF
+
+          chmod +x "$HOME/weixin-setup.sh"
+
+          echo ""
+          echo "=== Tailscale SSH 微信首次设置 ==="
+          echo "请使用 Tailscale SSH 登录后，只运行一次："
+          echo ""
+          echo "ssh $(whoami)@$(sudo tailscale ip -4)"
+          echo ""
+          echo "登录后运行："
+          echo "bash ~/weixin-setup.sh"
+          echo ""
+          echo "扫码完成后会自动保存；配对完成后也会自动保存。"
+
+      - name: Start Hermes Gateway (normal mode)
+        if: ${{ inputs.pairing_mode != 'pair' }}
         run: |
           set -e
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 
-          if [ "${{ inputs.pairing_mode }}" != "pair" ]; then
-            if ! grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
-              echo "ERROR: WEIXIN_ACCOUNT_ID was not restored. The Weixin login data is missing."
-              exit 1
-            fi
-            if ! grep -q '^WEIXIN_TOKEN=' "$HOME/.hermes/.env"; then
-              echo "ERROR: WEIXIN_TOKEN was not restored. The Weixin login token is missing."
-              exit 1
-            fi
+          if ! grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
+            echo "ERROR: WEIXIN_ACCOUNT_ID was not restored. The Weixin login data is missing."
+            exit 1
+          fi
+          if ! grep -q '^WEIXIN_TOKEN=' "$HOME/.hermes/.env"; then
+            echo "ERROR: WEIXIN_TOKEN was not restored. The Weixin login token is missing."
+            exit 1
           fi
 
           rm -f "$HOME/hermes-gateway.log" "$HOME/hermes-gateway.pid"
           nohup hermes gateway run > "$HOME/hermes-gateway.log" 2>&1 &
           echo $! > "$HOME/hermes-gateway.pid"
-
           sleep 15
 
           PID=$(cat "$HOME/hermes-gateway.pid")
@@ -344,7 +486,6 @@ jobs:
             cat "$HOME/hermes-gateway.log" || true
             exit 1
           fi
-
           if grep -Eiq 'Weixin startup failed|WEIXIN_TOKEN is required|WEIXIN_ACCOUNT_ID is required|Traceback \(most recent call last\)' "$HOME/hermes-gateway.log"; then
             echo "ERROR: Hermes Gateway started but Weixin initialization failed."
             cat "$HOME/hermes-gateway.log" || true
@@ -352,71 +493,69 @@ jobs:
           fi
 
           echo "Hermes Gateway is running."
-          if [ "${{ inputs.pairing_mode }}" = "pair" ]; then
-            echo "Hermes Gateway is running in Weixin pairing mode."
-          else
-            echo "Weixin credentials restored and gateway process is alive."
-          fi
+          echo "Weixin credentials restored and gateway process is alive."
 
-      - name: Wait for Weixin approval via SSH
+      - name: Wait for QR login save
         if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
           set -e
-          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-
-          echo "=== Weixin pairing via SSH ==="
-          echo "1. 用微信给 Hermes 机器人发送一条消息。"
-          echo "2. 微信收到 8 位配对码后，使用 Tailscale SSH 登录本节点。"
-          echo "3. SSH 登录后运行：hermes pairing list"
-          echo "4. 然后运行：hermes pairing approve weixin <8位配对码>"
-          echo
-          echo "SSH user: $(whoami)"
-          echo "SSH command: ssh $(whoami)@$(sudo tailscale ip -4)"
-          echo
-          echo "GitHub 将等待最多 30 分钟，检测 Approved Users。"
-
-          APPROVED=0
-          for i in $(seq 1 180); do
-            PAIRING_DIR="$HOME/.hermes/platforms/pairing"
-            [ -d "$PAIRING_DIR" ] || PAIRING_DIR="$HOME/.hermes/pairing"
-
-            # Do not parse the human-readable `hermes pairing list` output.
-            # The approval state is persisted in weixin-approved.json.
-            if [ -s "$PAIRING_DIR/weixin-approved.json" ]; then
-              APPROVED=1
-              echo
-              echo "检测到已批准的 Hermes 用户。"
-              echo "Approved state: $PAIRING_DIR/weixin-approved.json"
+          echo "等待 SSH 中扫码完成并立即保存..."
+          for i in $(seq 1 360); do
+            if [ -f /tmp/weixin_qr_saved ]; then
+              echo "=== 微信扫码登录确认完成 ==="
+              echo "微信登录状态已保存，立即进入下一步。"
               break
             fi
-
-            if [ $((i % 6)) -eq 0 ]; then
-              echo "等待微信配对批准... ($i/180)"
-            fi
-            sleep 10
+            sleep 2
           done
+          test -f /tmp/weixin_qr_saved
 
-          if [ "$APPROVED" -ne 1 ]; then
-            echo
-            echo "ERROR: 30 分钟内没有检测到 weixin-approved.json。"
-            echo "请确认已经通过 Tailscale SSH 执行 hermes pairing approve weixin <8位配对码>。"
-            exit 1
-          fi
+      - name: Upload QR login save immediately
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        id: upload_qr_login_save
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-persistent-data-${{ github.run_id }}-weixin-login
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
 
-          echo "=== Weixin pairing via SSH completed ==="
-
-      - name: Verify pending state before approval
-        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+      - name: Wait for pairing save
+        if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
           set -e
-          PENDING_DIR="$HOME/.hermes/platforms/pairing"
-          [ -d "$PENDING_DIR" ] || PENDING_DIR="$HOME/.hermes/pairing"
-          [ -s "$PENDING_DIR/weixin-pending.json" ] || {
-            echo "ERROR: No pending Weixin pairing state exists before approval."
-            exit 1
-          }
+          echo "等待 SSH 中微信配对完成并立即保存..."
+          for i in $(seq 1 360); do
+            if [ -f /tmp/weixin_pairing_saved ]; then
+              echo "=== 微信配对确认完成 ==="
+              echo "已批准的配对状态已保存，立即进入下一步。"
+              break
+            fi
+            sleep 2
+          done
+          test -f /tmp/weixin_pairing_saved
 
-      - name: Approve Weixin pairing code
+      - name: Upload pairing save immediately
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        id: upload_pairing_save_immediate
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-approved-${{ github.run_id }}-initial
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Confirm initial Weixin setup
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          test -n "${{ steps.upload_qr_login_save.outputs.artifact-id }}"
+          test -n "${{ steps.upload_pairing_save_immediate.outputs.artifact-id }}"
+          echo "微信扫码登录已保存。"
+          echo "微信配对已批准并立即保存。"
+          echo "首次微信设置完成，后续直接使用 normal 模式。"
+          exit 0
+
+      - name: Approve Weixin pairing code (legacy normal mode)
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         run: |
           set -e
@@ -427,45 +566,26 @@ jobs:
             exit 1
           fi
           hermes pairing approve weixin "$CODE"
+          echo "Weixin pairing approval completed."
 
-      - name: Verify approved pairing state
+      - name: Verify pairing approval (legacy normal mode)
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         run: |
           set -e
-          APPROVED_DIR="$HOME/.hermes/platforms/pairing"
-          [ -d "$APPROVED_DIR" ] || APPROVED_DIR="$HOME/.hermes/pairing"
-          [ -s "$APPROVED_DIR/weixin-approved.json" ] || {
+          PAIRING_DIR="$HOME/.hermes/platforms/pairing"
+          [ -d "$PAIRING_DIR" ] || PAIRING_DIR="$HOME/.hermes/pairing"
+          if [ ! -s "$PAIRING_DIR/weixin-approved.json" ]; then
             echo "ERROR: Weixin approval file was not created."
             exit 1
-          }
+          fi
+          echo "Weixin pairing approval is present."
 
-      - name: Save approved pairing state from SSH pairing
-        if: ${{ inputs.pairing_mode == 'pair' }}
-        run: |
-          "$HOME/save-hermes.sh" approved
-
-      - name: Upload approved pairing state from SSH pairing
-        if: ${{ inputs.pairing_mode == 'pair' }}
-        id: upload_ssh_approved_pairing
-        uses: actions/upload-artifact@v4
-        with:
-          name: hermes-approved-${{ github.run_id }}-initial
-          path: /tmp/hermes-data.tar.gz
-          retention-days: 90
-          if-no-files-found: error
-
-      - name: Confirm SSH approved pairing artifact
-        if: ${{ inputs.pairing_mode == 'pair' }}
-        run: |
-          test -n "${{ steps.upload_ssh_approved_pairing.outputs.artifact-id }}"
-          echo "Approved pairing state uploaded successfully."
-
-      - name: Save approved pairing state
+      - name: Save approved pairing state (legacy normal mode)
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         run: |
           "$HOME/save-hermes.sh" approved
 
-      - name: Upload approved pairing state
+      - name: Upload approved pairing state (legacy normal mode)
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         id: upload_approved_pairing
         uses: actions/upload-artifact@v4
@@ -475,18 +595,11 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-      - name: Confirm approved pairing artifact
+      - name: Confirm approved pairing artifact (legacy normal mode)
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
         run: |
           test -n "${{ steps.upload_approved_pairing.outputs.artifact-id }}"
           echo "Approved pairing state uploaded successfully."
-
-      - name: Finish pairing setup run
-        if: ${{ inputs.pairing_mode == 'pair' }}
-        run: |
-          echo "Pairing state has been approved, saved, and uploaded successfully."
-          echo "Next runs can use normal mode and the approved artifact."
-          exit 0
 
       - name: Wait 30 minutes - Save 1
         run: sleep 1800
@@ -836,3 +949,4 @@ jobs:
         run: |
           rm -f "$HOME/.weixin-backup-key"
           sudo tailscale logout || true
+
