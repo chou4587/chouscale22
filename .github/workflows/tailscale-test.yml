@@ -1,12 +1,24 @@
 # Tailscale Exit Handoff Test
 # Created: 2026-09-07 16:39 (UTC+8)
-# Total lines: 643
+# Total lines: 791
 
 name: Tailscale Exit Handoff Test
 
 on:
   workflow_dispatch:
-
+    inputs:
+      pairing_mode:
+        description: "首次配对选择 pair（通过 Tailscale SSH 完成）；以后正常运行选择 normal"
+        required: true
+        default: normal
+        type: choice
+        options:
+          - normal
+          - pair
+      pairing_code:
+        description: "旧版配对流程兼容项；SSH 配对方案不要填写"
+        required: false
+        type: string
 permissions:
   contents: read
   actions: write
@@ -32,8 +44,9 @@ jobs:
             --accept-dns=false \
             --hostname=github-exit-test
 
-      - name: Enable forwarding and NAT
+      - name: Enable forwarding, NAT, and Tailscale SSH
         run: |
+          set -e
           sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
           sudo sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
           IFACE=$(ip route | awk '/default/ {print $5; exit}')
@@ -41,80 +54,119 @@ jobs:
           sudo iptables -A FORWARD -i tailscale0 -j ACCEPT
           sudo iptables -A FORWARD -o tailscale0 -j ACCEPT
 
+          # Tailscale SSH uses TCP/22 on the Tailscale IP only.
+          sudo tailscale set --ssh
+          echo "SSH user: $(whoami)"
+          echo "SSH command: ssh $(whoami)@$(sudo tailscale ip -4)"
+
       - name: Install Hermes
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash >/dev/null 2>&1
-          export PATH="$HOME/.local/bin:$PATH"
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.8.27 >/dev/null 2>&1
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
           hermes --version >/dev/null
 
       - name: Restore Hermes data
+        if: ${{ inputs.pairing_mode != 'pair' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WEIXIN_BACKUP_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
+          PAIRING_MODE: ${{ inputs.pairing_mode }}
+          HAS_PAIRING_CODE: ${{ inputs.pairing_code != '' }}
         run: |
-          ID=$(
-            gh api --paginate \
-              "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
-              --jq '
+          set -euo pipefail
+          rm -rf /tmp/hermes-restore
+          mkdir -p /tmp/hermes-restore
+
+          if [ "$PAIRING_MODE" = "pair" ]; then
+            RESTORE_PREFIX="hermes-approved-"
+            LEGACY_FALLBACK=1
+          elif [ "$HAS_PAIRING_CODE" = "true" ]; then
+            RESTORE_PREFIX="hermes-pair-pending-"
+            LEGACY_FALLBACK=0
+          else
+            RESTORE_PREFIX="hermes-approved-"
+            LEGACY_FALLBACK=1
+          fi
+          export RESTORE_PREFIX
+
+          gh api --paginate             "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"             --jq '
+              .artifacts[]
+              | select(.expired == false and (.name | startswith(env.RESTORE_PREFIX)))
+              | [.created_at, .id]
+              | @tsv
+            ' 2>/dev/null | sort -r | cut -f2 > /tmp/hermes-artifact-ids || true
+
+          if [ "$LEGACY_FALLBACK" -eq 1 ]; then
+            gh api --paginate               "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100"               --jq '
                 .artifacts[]
-                | select(
-                    .expired == false
-                    and (
-                      .name == "hermes-persistent-data"
-                      or (.name | startswith("hermes-persistent-data-"))
-                    )
-                  )
+                | select(.expired == false and (.name == "hermes-persistent-data" or (.name | startswith("hermes-persistent-data-"))))
                 | [.created_at, .id]
                 | @tsv
-              ' |
-            sort |
-            tail -n 1 |
-            cut -f 2
-          )
-
-          if [ -n "$ID" ]; then
-            rm -rf /tmp/hermes-restore
-            mkdir -p /tmp/hermes-restore
-
-            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" \
-              > /tmp/hermes.zip
-
-            unzip -q /tmp/hermes.zip -d /tmp/hermes-restore
-
-            if [ -f /tmp/hermes-restore/hermes-data.tar.gz ]; then
-              tar -xzf /tmp/hermes-restore/hermes-data.tar.gz -C "$HOME"
-            fi
-
-            rm -f "$HOME/.hermes/.env"
-            rm -f "$HOME/.hermes/auth.json"
-
-            # Weixin credentials are restored separately in encrypted form.
-            if [ -f /tmp/hermes-restore/weixin-credentials.enc ]; then
-              WEIXIN_BACKUP_KEY="$WEIXIN_BACKUP_KEY" openssl enc -d -aes-256-cbc -pbkdf2 \
-                -pass env:WEIXIN_BACKUP_KEY \
-                -in /tmp/hermes-restore/weixin-credentials.enc \
-                -out /tmp/weixin-credentials.tar.gz
-              tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME"
-              rm -f /tmp/weixin-credentials.tar.gz
-            fi
-
-            if [ -f /tmp/hermes-restore/weixin-env.enc ]; then
-              WEIXIN_BACKUP_KEY="$WEIXIN_BACKUP_KEY" openssl enc -d -aes-256-cbc -pbkdf2 \
-                -pass env:WEIXIN_BACKUP_KEY \
-                -in /tmp/hermes-restore/weixin-env.enc \
-                -out /tmp/weixin.env
-            fi
-
-            rm -rf /tmp/hermes-restore
-            rm -f /tmp/hermes.zip
+              ' 2>/dev/null | sort -r | cut -f2 >> /tmp/hermes-artifact-ids || true
           fi
 
-      - name: Install Dashboard
+          FOUND=0
+          while read -r ID; do
+            [ -n "$ID" ] || continue
+            rm -rf /tmp/hermes-restore/*
+            rm -f /tmp/hermes.zip /tmp/weixin.env /tmp/weixin-credentials.tar.gz
+            mkdir -p /tmp/hermes-restore/data /tmp/hermes-restore/zip
+
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID/zip" > /tmp/hermes.zip 2>/dev/null || continue
+            unzip -q /tmp/hermes.zip -d /tmp/hermes-restore/zip 2>/dev/null || continue
+            [ -f /tmp/hermes-restore/zip/hermes-data.tar.gz ] || continue
+            tar -xzf /tmp/hermes-restore/zip/hermes-data.tar.gz -C /tmp/hermes-restore/data 2>/dev/null || continue
+
+            if [ "$HAS_PAIRING_CODE" = "true" ]; then
+              [ -f /tmp/hermes-restore/data/state-manifest ] || continue
+              grep -qx 'state=pair-pending' /tmp/hermes-restore/data/state-manifest || continue
+            elif [ -f /tmp/hermes-restore/data/state-manifest ]; then
+              grep -qx 'state=approved' /tmp/hermes-restore/data/state-manifest || continue
+            fi
+
+            [ -f /tmp/hermes-restore/data/weixin-env.enc ] || continue
+            openssl enc -d -aes-256-cbc -pbkdf2               -pass env:WEIXIN_BACKUP_KEY               -in /tmp/hermes-restore/data/weixin-env.enc               -out /tmp/weixin.env 2>/dev/null || continue
+            grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' /tmp/weixin.env || continue
+            grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' /tmp/weixin.env || continue
+            [ -d /tmp/hermes-restore/data/.hermes ] || continue
+
+            rm -rf "$HOME/.hermes"
+            cp -a /tmp/hermes-restore/data/.hermes "$HOME/.hermes"
+
+            if [ -f /tmp/hermes-restore/data/weixin-credentials.enc ]; then
+              openssl enc -d -aes-256-cbc -pbkdf2                 -pass env:WEIXIN_BACKUP_KEY                 -in /tmp/hermes-restore/data/weixin-credentials.enc                 -out /tmp/weixin-credentials.tar.gz 2>/dev/null || continue
+              tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME" 2>/dev/null || continue
+            fi
+
+            FOUND=1
+            echo "Restored Hermes data from artifact $ID."
+            break
+          done < /tmp/hermes-artifact-ids
+
+          rm -f /tmp/hermes-artifact-ids
+
+          if [ "$FOUND" -ne 1 ]; then
+            if [ "$HAS_PAIRING_CODE" = "true" ]; then
+              echo "ERROR: No hermes-pair-pending artifact was found."
+            else
+              echo "ERROR: No approved Hermes backup containing valid Weixin credentials was found."
+            fi
+            exit 1
+          fi
+
+          rm -rf /tmp/hermes-restore /tmp/hermes.zip /tmp/weixin-credentials.tar.gz
+
+      - name: Install Dashboard and Weixin dependencies
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
           cd "$HOME/.hermes/hermes-agent"
           uv pip install --python ./venv/bin/python -e ".[web,pty]" >/dev/null 2>&1
+          uv pip install --python ./venv/bin/python aiohttp cryptography qrcode >/dev/null 2>&1
 
       - name: Configure Hermes
         run: |
@@ -146,6 +198,12 @@ jobs:
           set -euo pipefail
 
           export WEIXIN_BACKUP_KEY="$(cat "$HOME/.weixin-backup-key")"
+
+          STATE="${1:-approved}"
+          case "$STATE" in
+            approved|pair-pending) ;;
+            *) echo "ERROR: invalid backup state: $STATE" >&2; exit 1 ;;
+          esac
 
           OUT="/tmp/hermes-data.tar.gz"
           SNAP="/tmp/hermes-snapshot"
@@ -213,18 +271,26 @@ jobs:
             cp "$WXENC" "$SNAP/weixin-credentials.enc"
           fi
 
-          if [ -f "$HOME/.hermes/.env" ]; then
-            grep -E '^WEIXIN_(ACCOUNT_ID|TOKEN|BASE_URL|CDN_BASE_URL|DM_POLICY|ALLOW_ALL_USERS|ALLOWED_USERS|GROUP_POLICY|GROUP_ALLOWED_USERS|HOME_CHANNEL|HOME_CHANNEL_NAME)=' \
-              "$HOME/.hermes/.env" > "$WXENV" || true
-            if [ -s "$WXENV" ]; then
-              openssl enc -aes-256-cbc -pbkdf2 -salt \
-                -pass env:WEIXIN_BACKUP_KEY \
-                -in "$WXENV" -out "$WXENVENC"
-              cp "$WXENVENC" "$SNAP/weixin-env.enc"
-            fi
+          if [ ! -f "$HOME/.hermes/.env" ]; then
+            echo "ERROR: Hermes .env is missing; refusing to create a backup." >&2
+            exit 1
           fi
 
-          TAR_ITEMS=(.hermes)
+          grep -E '^WEIXIN_(ACCOUNT_ID|TOKEN|BASE_URL|CDN_BASE_URL|DM_POLICY|ALLOW_ALL_USERS|ALLOWED_USERS|GROUP_POLICY|GROUP_ALLOWED_USERS|HOME_CHANNEL|HOME_CHANNEL_NAME)=' \
+            "$HOME/.hermes/.env" > "$WXENV" || true
+          grep -q '^WEIXIN_ACCOUNT_ID=.[^[:space:]]*' "$WXENV" || { echo "ERROR: WEIXIN_ACCOUNT_ID missing; refusing backup." >&2; exit 1; }
+          grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' "$WXENV" || { echo "ERROR: WEIXIN_TOKEN missing; refusing backup." >&2; exit 1; }
+
+          openssl enc -aes-256-cbc -pbkdf2 -salt \
+            -pass env:WEIXIN_BACKUP_KEY \
+            -in "$WXENV" -out "$WXENVENC"
+          cp "$WXENVENC" "$SNAP/weixin-env.enc"
+
+          printf 'state=%s\nrun_id=%s\ncreated_at=%s\n' \
+            "$STATE" "${GITHUB_RUN_ID:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > "$SNAP/state-manifest"
+
+          TAR_ITEMS=(.hermes state-manifest)
           [ -f "$SNAP/weixin-credentials.enc" ] && TAR_ITEMS+=(weixin-credentials.enc)
           [ -f "$SNAP/weixin-env.enc" ] && TAR_ITEMS+=(weixin-env.enc)
           tar -czf "$OUT" -C "$SNAP" "${TAR_ITEMS[@]}"
@@ -252,34 +318,196 @@ jobs:
 
       - name: Start Hermes Gateway
         run: |
-          if grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
-            nohup hermes gateway > /dev/null 2>&1 &
-            sleep 5
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+          if [ "${{ inputs.pairing_mode }}" != "pair" ]; then
+            if ! grep -q '^WEIXIN_ACCOUNT_ID=' "$HOME/.hermes/.env"; then
+              echo "ERROR: WEIXIN_ACCOUNT_ID was not restored. The Weixin login data is missing."
+              exit 1
+            fi
+            if ! grep -q '^WEIXIN_TOKEN=' "$HOME/.hermes/.env"; then
+              echo "ERROR: WEIXIN_TOKEN was not restored. The Weixin login token is missing."
+              exit 1
+            fi
           fi
+
+          rm -f "$HOME/hermes-gateway.log" "$HOME/hermes-gateway.pid"
+          nohup hermes gateway run > "$HOME/hermes-gateway.log" 2>&1 &
+          echo $! > "$HOME/hermes-gateway.pid"
+
+          sleep 15
+
+          PID=$(cat "$HOME/hermes-gateway.pid")
+          if ! kill -0 "$PID" 2>/dev/null; then
+            echo "ERROR: Hermes Gateway exited during startup."
+            cat "$HOME/hermes-gateway.log" || true
+            exit 1
+          fi
+
+          if grep -Eiq 'Weixin startup failed|WEIXIN_TOKEN is required|WEIXIN_ACCOUNT_ID is required|Traceback \(most recent call last\)' "$HOME/hermes-gateway.log"; then
+            echo "ERROR: Hermes Gateway started but Weixin initialization failed."
+            cat "$HOME/hermes-gateway.log" || true
+            exit 1
+          fi
+
+          echo "Hermes Gateway is running."
+          if [ "${{ inputs.pairing_mode }}" = "pair" ]; then
+            echo "Hermes Gateway is running in Weixin pairing mode."
+          else
+            echo "Weixin credentials restored and gateway process is alive."
+          fi
+
+      - name: Wait for Weixin approval via SSH
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+
+          echo "=== Weixin pairing via SSH ==="
+          echo "1. 用微信给 Hermes 机器人发送一条消息。"
+          echo "2. 微信收到 8 位配对码后，使用 Tailscale SSH 登录本节点。"
+          echo "3. SSH 登录后运行：hermes pairing list"
+          echo "4. 然后运行：hermes pairing approve weixin <8位配对码>"
+          echo
+          echo "SSH user: $(whoami)"
+          echo "SSH command: ssh $(whoami)@$(sudo tailscale ip -4)"
+          echo
+          echo "GitHub 将等待最多 30 分钟，检测 Approved Users。"
+
+          APPROVED=0
+          for i in $(seq 1 180); do
+            PAIRING_DIR="$HOME/.hermes/platforms/pairing"
+            [ -d "$PAIRING_DIR" ] || PAIRING_DIR="$HOME/.hermes/pairing"
+
+            # Do not parse the human-readable `hermes pairing list` output.
+            # The approval state is persisted in weixin-approved.json.
+            if [ -s "$PAIRING_DIR/weixin-approved.json" ]; then
+              APPROVED=1
+              echo
+              echo "检测到已批准的 Hermes 用户。"
+              echo "Approved state: $PAIRING_DIR/weixin-approved.json"
+              break
+            fi
+
+            if [ $((i % 6)) -eq 0 ]; then
+              echo "等待微信配对批准... ($i/180)"
+            fi
+            sleep 10
+          done
+
+          if [ "$APPROVED" -ne 1 ]; then
+            echo
+            echo "ERROR: 30 分钟内没有检测到 weixin-approved.json。"
+            echo "请确认已经通过 Tailscale SSH 执行 hermes pairing approve weixin <8位配对码>。"
+            exit 1
+          fi
+
+          echo "=== Weixin pairing via SSH completed ==="
+
+      - name: Verify pending state before approval
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          set -e
+          PENDING_DIR="$HOME/.hermes/platforms/pairing"
+          [ -d "$PENDING_DIR" ] || PENDING_DIR="$HOME/.hermes/pairing"
+          [ -s "$PENDING_DIR/weixin-pending.json" ] || {
+            echo "ERROR: No pending Weixin pairing state exists before approval."
+            exit 1
+          }
+
+      - name: Approve Weixin pairing code
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          set -e
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          CODE="${{ inputs.pairing_code }}"
+          if ! printf '%s' "$CODE" | grep -Eq '^[A-Za-z0-9]{8}$'; then
+            echo "ERROR: pairing_code must be exactly 8 letters/numbers."
+            exit 1
+          fi
+          hermes pairing approve weixin "$CODE"
+
+      - name: Verify approved pairing state
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          set -e
+          APPROVED_DIR="$HOME/.hermes/platforms/pairing"
+          [ -d "$APPROVED_DIR" ] || APPROVED_DIR="$HOME/.hermes/pairing"
+          [ -s "$APPROVED_DIR/weixin-approved.json" ] || {
+            echo "ERROR: Weixin approval file was not created."
+            exit 1
+          }
+
+      - name: Save approved pairing state from SSH pairing
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          "$HOME/save-hermes.sh" approved
+
+      - name: Upload approved pairing state from SSH pairing
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        id: upload_ssh_approved_pairing
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-approved-${{ github.run_id }}-initial
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Confirm SSH approved pairing artifact
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          test -n "${{ steps.upload_ssh_approved_pairing.outputs.artifact-id }}"
+          echo "Approved pairing state uploaded successfully."
+
+      - name: Save approved pairing state
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          "$HOME/save-hermes.sh" approved
+
+      - name: Upload approved pairing state
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        id: upload_approved_pairing
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-approved-${{ github.run_id }}-initial
+          path: /tmp/hermes-data.tar.gz
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Confirm approved pairing artifact
+        if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
+        run: |
+          test -n "${{ steps.upload_approved_pairing.outputs.artifact-id }}"
+          echo "Approved pairing state uploaded successfully."
+
+      - name: Finish pairing setup run
+        if: ${{ inputs.pairing_mode == 'pair' }}
+        run: |
+          echo "Pairing state has been approved, saved, and uploaded successfully."
+          echo "Next runs can use normal mode and the approved artifact."
+          exit 0
 
       - name: Wait 30 minutes - Save 1
         run: sleep 1800
 
       - name: Prepare save 1
         id: prepare_save_1
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 1
         id: upload_save_1
         if: steps.prepare_save_1.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-01
+          name: hermes-approved-${{ github.run_id }}-01
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 1
         if: steps.upload_save_1.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -296,15 +524,15 @@ jobs:
               | select(
                   .expired == false
                   and (
-                    .name == "hermes-persistent-data"
-                    or (.name | startswith("hermes-persistent-data-"))
+                    (.name | startswith("hermes-approved-"))
+                    or (.name | startswith("hermes-pair-pending-"))
                   )
                 )
-              | [.created_at, .id]
+              | [.created_at, .id, .name]
               | @tsv
             ' |
-          sort |
-          while IFS=$'\t' read -r CREATED ID; do
+          sort -r |
+          while IFS=$'\t' read -r CREATED ID NAME; do
             if [ "$ID" != "$CURRENT_ID" ]; then
               gh api --method DELETE \
                 "repos/$GITHUB_REPOSITORY/actions/artifacts/$ID" \
@@ -322,24 +550,21 @@ jobs:
 
       - name: Prepare save 2
         id: prepare_save_2
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 2
         id: upload_save_2
         if: steps.prepare_save_2.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-02
+          name: hermes-approved-${{ github.run_id }}-02
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 2
         if: steps.upload_save_2.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -351,24 +576,21 @@ jobs:
 
       - name: Prepare save 3
         id: prepare_save_3
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 3
         id: upload_save_3
         if: steps.prepare_save_3.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-03
+          name: hermes-approved-${{ github.run_id }}-03
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 3
         if: steps.upload_save_3.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -380,24 +602,21 @@ jobs:
 
       - name: Prepare save 4
         id: prepare_save_4
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 4
         id: upload_save_4
         if: steps.prepare_save_4.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-04
+          name: hermes-approved-${{ github.run_id }}-04
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 4
         if: steps.upload_save_4.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -409,24 +628,21 @@ jobs:
 
       - name: Prepare save 5
         id: prepare_save_5
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 5
         id: upload_save_5
         if: steps.prepare_save_5.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-05
+          name: hermes-approved-${{ github.run_id }}-05
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 5
         if: steps.upload_save_5.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -438,24 +654,21 @@ jobs:
 
       - name: Prepare save 6
         id: prepare_save_6
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 6
         id: upload_save_6
         if: steps.prepare_save_6.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-06
+          name: hermes-approved-${{ github.run_id }}-06
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 6
         if: steps.upload_save_6.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -467,24 +680,21 @@ jobs:
 
       - name: Prepare save 7
         id: prepare_save_7
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 7
         id: upload_save_7
         if: steps.prepare_save_7.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-07
+          name: hermes-approved-${{ github.run_id }}-07
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 7
         if: steps.upload_save_7.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -496,24 +706,21 @@ jobs:
 
       - name: Prepare save 8
         id: prepare_save_8
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 8
         id: upload_save_8
         if: steps.prepare_save_8.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-08
+          name: hermes-approved-${{ github.run_id }}-08
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 8
         if: steps.upload_save_8.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -525,24 +732,21 @@ jobs:
 
       - name: Prepare save 9
         id: prepare_save_9
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 9
         id: upload_save_9
         if: steps.prepare_save_9.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-09
+          name: hermes-approved-${{ github.run_id }}-09
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 9
         if: steps.upload_save_9.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -554,24 +758,21 @@ jobs:
 
       - name: Prepare save 10
         id: prepare_save_10
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 10
         id: upload_save_10
         if: steps.prepare_save_10.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-10
+          name: hermes-approved-${{ github.run_id }}-10
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 10
         if: steps.upload_save_10.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -583,24 +784,21 @@ jobs:
 
       - name: Prepare save 11
         id: prepare_save_11
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Upload save 11
         id: upload_save_11
         if: steps.prepare_save_11.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-11
+          name: hermes-approved-${{ github.run_id }}-11
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Cleanup after save 11
         if: steps.upload_save_11.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -612,24 +810,21 @@ jobs:
 
       - name: Final prepare save
         id: prepare_save_final
-        continue-on-error: true
         run: |
-          "$HOME/save-hermes.sh"
+          "$HOME/save-hermes.sh" approved
 
       - name: Final upload
         id: upload_save_final
         if: steps.prepare_save_final.outcome == 'success'
-        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-persistent-data-${{ github.run_id }}-final
+          name: hermes-approved-${{ github.run_id }}-final
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
       - name: Final cleanup
         if: steps.upload_save_final.outcome == 'success'
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
