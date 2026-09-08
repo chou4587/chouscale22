@@ -75,7 +75,15 @@ jobs:
             "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" \
             --jq '
               .artifacts[]
-              | select(.expired == false and (.name == "hermes-persistent-data" or (.name | startswith("hermes-persistent-data-"))))
+              | select(
+                  .expired == false
+                  and (
+                    .name == "hermes-persistent-data"
+                    or (.name | startswith("hermes-persistent-data-"))
+                    or (.name | startswith("hermes-approved-"))
+                    or (.name | startswith("hermes-pair-pending-"))
+                  )
+                )
               | [.created_at, .id]
               | @tsv
             ' | sort -r | cut -f2 > /tmp/hermes-artifact-ids
@@ -243,13 +251,18 @@ jobs:
           # Weixin credentials contain a login token. The repository is public, so
           # never place these credentials in a plain artifact. Encrypt them using
           # a key derived from the existing GitHub secret TAILSCALE_AUTH_KEY.
-          if [ -d "$HOME/.hermes/weixin/accounts" ] && find "$HOME/.hermes/weixin/accounts" -type f -print -quit | grep -q .; then
-            tar -czf "$WXOUT" -C "$HOME/.hermes" weixin/accounts
-            openssl enc -aes-256-cbc -pbkdf2 -salt \
-              -pass env:WEIXIN_BACKUP_KEY \
-              -in "$WXOUT" -out "$WXENC"
-            cp "$WXENC" "$SNAP/weixin-credentials.enc"
+          # A backup without the encrypted account data is NOT a valid Weixin backup.
+          # Refuse to create/upload it so a failed save can never replace the last
+          # known-good Weixin backup.
+          if [ ! -d "$HOME/.hermes/weixin/accounts" ] || ! find "$HOME/.hermes/weixin/accounts" -type f -print -quit | grep -q .; then
+            echo "ERROR: Weixin account credentials are missing; refusing to create a backup." >&2
+            exit 1
           fi
+          tar -czf "$WXOUT" -C "$HOME/.hermes" weixin/accounts
+          openssl enc -aes-256-cbc -pbkdf2 -salt \
+            -pass env:WEIXIN_BACKUP_KEY \
+            -in "$WXOUT" -out "$WXENC"
+          cp "$WXENC" "$SNAP/weixin-credentials.enc"
 
           if [ ! -f "$HOME/.hermes/.env" ]; then
             echo "ERROR: Hermes .env is missing; refusing to create a backup." >&2
@@ -266,9 +279,9 @@ jobs:
             -in "$WXENV" -out "$WXENVENC"
           cp "$WXENVENC" "$SNAP/weixin-env.enc"
 
-          TAR_ITEMS=(.hermes)
-          [ -f "$SNAP/weixin-credentials.enc" ] && TAR_ITEMS+=(weixin-credentials.enc)
-          [ -f "$SNAP/weixin-env.enc" ] && TAR_ITEMS+=(weixin-env.enc)
+          [ -s "$SNAP/weixin-credentials.enc" ] || { echo "ERROR: encrypted Weixin credentials are missing; refusing backup." >&2; exit 1; }
+          [ -s "$SNAP/weixin-env.enc" ] || { echo "ERROR: encrypted Weixin environment is missing; refusing backup." >&2; exit 1; }
+          TAR_ITEMS=(.hermes weixin-credentials.enc weixin-env.enc)
           tar -czf "$OUT" -C "$SNAP" "${TAR_ITEMS[@]}"
 
           rm -rf "$SNAP"
