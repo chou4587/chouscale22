@@ -115,13 +115,20 @@ jobs:
             fi
             cp -a /tmp/hermes-restore/data/.hermes "$HOME/.hermes"
 
-            if [ -f /tmp/hermes-restore/data/weixin-credentials.enc ]; then
-              if openssl enc -d -aes-256-cbc -pbkdf2 \
-                -pass env:WEIXIN_BACKUP_KEY \
-                -in /tmp/hermes-restore/data/weixin-credentials.enc \
-                -out /tmp/weixin-credentials.tar.gz 2>/dev/null; then
-                tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME" 2>/dev/null || true
-              fi
+            if [ ! -f /tmp/hermes-restore/data/weixin-credentials.enc ]; then
+              continue
+            fi
+            if ! openssl enc -d -aes-256-cbc -pbkdf2 \
+              -pass env:WEIXIN_BACKUP_KEY \
+              -in /tmp/hermes-restore/data/weixin-credentials.enc \
+              -out /tmp/weixin-credentials.tar.gz 2>/dev/null; then
+              continue
+            fi
+            if ! tar -xzf /tmp/weixin-credentials.tar.gz -C "$HOME" 2>/dev/null; then
+              continue
+            fi
+            if ! [ -d "$HOME/.hermes/weixin/accounts" ] || ! find "$HOME/.hermes/weixin/accounts" -type f -print -quit | grep -q .; then
+              continue
             fi
 
             FOUND=1
