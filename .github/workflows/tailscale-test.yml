@@ -370,22 +370,28 @@ jobs:
 
           APPROVED=0
           for i in $(seq 1 180); do
-            OUTPUT="$(hermes pairing list 2>/dev/null || true)"
-            printf '%s\n' "$OUTPUT"
+            PAIRING_DIR="$HOME/.hermes/platforms/pairing"
+            [ -d "$PAIRING_DIR" ] || PAIRING_DIR="$HOME/.hermes/pairing"
 
-            if printf '%s\n' "$OUTPUT" | grep -Eq '^ Approved Users \([1-9][0-9]*\):'; then
+            # Do not parse the human-readable `hermes pairing list` output.
+            # The approval state is persisted in weixin-approved.json.
+            if [ -s "$PAIRING_DIR/weixin-approved.json" ]; then
               APPROVED=1
               echo
               echo "检测到已批准的 Hermes 用户。"
+              echo "Approved state: $PAIRING_DIR/weixin-approved.json"
               break
             fi
 
+            if [ $((i % 6)) -eq 0 ]; then
+              echo "等待微信配对批准... ($i/180)"
+            fi
             sleep 10
           done
 
           if [ "$APPROVED" -ne 1 ]; then
             echo
-            echo "ERROR: 30 分钟内没有检测到 Approved Users。"
+            echo "ERROR: 30 分钟内没有检测到 weixin-approved.json。"
             echo "请确认已经通过 Tailscale SSH 执行 hermes pairing approve weixin <8位配对码>。"
             exit 1
           fi
