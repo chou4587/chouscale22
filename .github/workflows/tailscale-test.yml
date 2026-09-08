@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       pairing_mode:
-        description: "首次配对选择 pair；以后正常运行选择 normal"
+        description: "首次配对选择 pair（通过 Tailscale SSH 完成）；以后正常运行选择 normal"
         required: true
         default: normal
         type: choice
@@ -16,7 +16,7 @@ on:
           - normal
           - pair
       pairing_code:
-        description: "第二次运行批准微信配对时填写8位配对码；首次 pair 留空"
+        description: "旧版配对流程兼容项；SSH 配对方案不要填写"
         required: false
         type: string
 permissions:
@@ -44,14 +44,20 @@ jobs:
             --accept-dns=false \
             --hostname=github-exit-test
 
-      - name: Enable forwarding and NAT
+      - name: Enable forwarding, NAT, and Tailscale SSH
         run: |
+          set -e
           sudo sysctl -w net.ipv4.ip_forward=1 >/dev/null
           sudo sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null
           IFACE=$(ip route | awk '/default/ {print $5; exit}')
           sudo iptables -t nat -A POSTROUTING -o "$IFACE" -j MASQUERADE
           sudo iptables -A FORWARD -i tailscale0 -j ACCEPT
           sudo iptables -A FORWARD -o tailscale0 -j ACCEPT
+
+          # Tailscale SSH uses TCP/22 on the Tailscale IP only.
+          sudo tailscale set --ssh
+          echo "SSH user: $(whoami)"
+          echo "SSH command: ssh $(whoami)@$(sudo tailscale ip -4)"
 
       - name: Install Hermes
         run: |
@@ -345,42 +351,46 @@ jobs:
           echo "Hermes Gateway is running."
           echo "Weixin credentials restored and gateway process is alive."
 
-      - name: Wait for Weixin pairing request
+      - name: Wait for Weixin approval via SSH
         if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
           set -e
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
 
-          echo "=== Weixin pairing ==="
-          echo "现在请用你的微信给 Hermes 机器人发送一条消息。"
-          echo "微信收到 Hermes 返回的 8 位配对码后，把这个配对码记下来。"
-          echo "GitHub 日志不会打印配对码，这是 Hermes 的安全设计。"
+          echo "=== Weixin pairing via SSH ==="
+          echo "1. 用微信给 Hermes 机器人发送一条消息。"
+          echo "2. 微信收到 8 位配对码后，使用 Tailscale SSH 登录本节点。"
+          echo "3. SSH 登录后运行：hermes pairing list"
+          echo "4. 然后运行：hermes pairing approve weixin <8位配对码>"
           echo
+          echo "SSH user: $(whoami)"
+          echo "SSH command: ssh $(whoami)@$(sudo tailscale ip -4)"
+          echo
+          echo "GitHub 将等待最多 30 分钟，检测 Approved Users。"
 
-          FOUND=0
-          for i in $(seq 1 60); do
-            echo "--- checking pairing requests ($i/60) ---"
-            hermes pairing list || true
+          APPROVED=0
+          for i in $(seq 1 180); do
+            OUTPUT="$(hermes pairing list 2>/dev/null || true)"
+            printf '%s\n' "$OUTPUT"
 
-            if hermes pairing list 2>/dev/null | grep -q '^ Pending Pairing Requests'; then
-              FOUND=1
+            if printf '%s\n' "$OUTPUT" | grep -Eq '^ Approved Users \([1-9][0-9]*\):'; then
+              APPROVED=1
               echo
-              echo "检测到待配对请求。"
-              echo "请查看微信里 Hermes 发来的 8 位配对码。"
+              echo "检测到已批准的 Hermes 用户。"
               break
             fi
 
             sleep 10
           done
 
-          if [ "$FOUND" -ne 1 ]; then
+          if [ "$APPROVED" -ne 1 ]; then
             echo
-            echo "ERROR: 10 分钟内没有检测到 Weixin 配对请求。"
-            echo "请确认已经用微信向 Hermes 账号发送过消息，然后重新运行 pair。"
+            echo "ERROR: 30 分钟内没有检测到 Approved Users。"
+            echo "请确认已经通过 Tailscale SSH 执行 hermes pairing approve weixin <8位配对码>。"
             exit 1
           fi
 
-          echo "=== End Weixin pairing wait ==="
+          echo "=== Weixin pairing via SSH completed ==="
 
       - name: Verify pending state before approval
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
@@ -416,26 +426,26 @@ jobs:
             exit 1
           }
 
-      - name: Save pending pairing state
+      - name: Save approved pairing state from SSH pairing
         if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
-          "$HOME/save-hermes.sh" pair-pending
+          "$HOME/save-hermes.sh" approved
 
-      - name: Upload pending pairing state
+      - name: Upload approved pairing state from SSH pairing
         if: ${{ inputs.pairing_mode == 'pair' }}
-        id: upload_pending_pairing
+        id: upload_ssh_approved_pairing
         uses: actions/upload-artifact@v4
         with:
-          name: hermes-pair-pending-${{ github.run_id }}
+          name: hermes-approved-${{ github.run_id }}-initial
           path: /tmp/hermes-data.tar.gz
           retention-days: 90
           if-no-files-found: error
 
-      - name: Confirm pending pairing artifact
+      - name: Confirm SSH approved pairing artifact
         if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
-          test -n "${{ steps.upload_pending_pairing.outputs.artifact-id }}"
-          echo "Pending pairing state uploaded successfully."
+          test -n "${{ steps.upload_ssh_approved_pairing.outputs.artifact-id }}"
+          echo "Approved pairing state uploaded successfully."
 
       - name: Save approved pairing state
         if: ${{ inputs.pairing_mode == 'normal' && inputs.pairing_code != '' }}
@@ -461,8 +471,8 @@ jobs:
       - name: Finish pairing setup run
         if: ${{ inputs.pairing_mode == 'pair' }}
         run: |
-          echo "Pairing state has been saved and uploaded successfully."
-          echo "Next run: normal + the new 8-digit pairing code."
+          echo "Pairing state has been approved, saved, and uploaded successfully."
+          echo "Next runs can use normal mode and the approved artifact."
           exit 0
 
       - name: Wait 30 minutes - Save 1
