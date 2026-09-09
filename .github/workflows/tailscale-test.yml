@@ -61,7 +61,7 @@ jobs:
 
       - name: Install Hermes
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.8.31 >/dev/null 2>&1
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.9.7 >/dev/null 2>&1
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/bin" >> "$GITHUB_PATH"
