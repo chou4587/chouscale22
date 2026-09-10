@@ -61,7 +61,7 @@ jobs:
 
       - name: Install Hermes
         run: |
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.9.7 >/dev/null 2>&1
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --branch v2026.8.31 >/dev/null 2>&1
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/bin" >> "$GITHUB_PATH"
@@ -132,8 +132,11 @@ jobs:
             grep -q '^WEIXIN_TOKEN=.[^[:space:]]*' /tmp/weixin.env || continue
             [ -d /tmp/hermes-restore/data/.hermes ] || continue
 
-            rm -rf "$HOME/.hermes"
-            cp -a /tmp/hermes-restore/data/.hermes "$HOME/.hermes"
+            mkdir -p "$HOME/.hermes"
+            rsync -a \
+              --exclude='hermes-agent/' \
+              /tmp/hermes-restore/data/.hermes/ \
+              "$HOME/.hermes/"
 
             if [ -f /tmp/hermes-restore/data/weixin-credentials.enc ]; then
               openssl enc -d -aes-256-cbc -pbkdf2                 -pass env:WEIXIN_BACKUP_KEY                 -in /tmp/hermes-restore/data/weixin-credentials.enc                 -out /tmp/weixin-credentials.tar.gz 2>/dev/null || continue
@@ -229,6 +232,7 @@ jobs:
               --exclude='state.db-wal' \
               --exclude='state.db-shm' \
               --exclude='weixin/accounts/' \
+              --exclude='hermes-agent/' \
               "$HOME/.hermes/" \
               "$SNAP/.hermes/"; then
               success=1
