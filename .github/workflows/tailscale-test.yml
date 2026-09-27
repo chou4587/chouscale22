@@ -34,7 +34,7 @@ jobs:
     steps:
       - name: Install Tailscale
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh --non-interactive --verbose
+          curl -fsSL https://tailscale.com/install.sh | sh
 
       - name: Connect Tailscale
         run: |
