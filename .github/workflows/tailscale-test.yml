@@ -162,16 +162,16 @@ jobs:
           rm -rf /tmp/hermes-restore /tmp/hermes.zip /tmp/weixin-credentials.tar.gz
 
       - name: Install Dashboard and Weixin dependencies
-       run: |
-         curl -LsSf https://astral.sh/uv/install.sh | sh
-         export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
-         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-         echo "$HOME/bin" >> "$GITHUB_PATH"
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-         cd "$HOME/.hermes/hermes-agent"
+          cd "$HOME/.hermes/hermes-agent"
 
-         uv pip install --system -e ".[web,pty]"
-         uv pip install --system aiohttp cryptography qrcode
+          uv pip install --system -e ".[web,pty]"
+          uv pip install --system aiohttp cryptography qrcode
 
       - name: Configure Hermes
         run: |
