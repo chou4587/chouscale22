@@ -166,6 +166,8 @@ jobs:
           export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           echo "$HOME/bin" >> "$GITHUB_PATH"
+          command -v uv
+          uv --version
           cd "$HOME/.hermes/hermes-agent"
           uv pip install --python ./venv/bin/python -e ".[web,pty]" >/dev/null 2>&1
           uv pip install --python ./venv/bin/python aiohttp cryptography qrcode >/dev/null 2>&1
