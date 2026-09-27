@@ -170,8 +170,8 @@ jobs:
           command -v uv
           uv --version
           cd "$HOME/.hermes/hermes-agent"
-          uv pip install --python ./venv/bin/python -e ".[web,pty]"
-          uv pip install --python ./venv/bin/python aiohttp cryptography qrcode
+          uv pip install -e ".[web,pty]"
+          uv pip install aiohttp cryptography qrcode
 
       - name: Configure Hermes
         run: |
